@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -79,6 +80,7 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 	descEntry.SetText(in.Description)
 	descEntry.PlaceHolder = "Дополнительная информация о происшествии..."
 	descEntry.Wrapping = fyne.TextWrapWord
+	descEntry.SetMinRowsVisible(3)
 
 	form := widget.NewForm(
 		widget.NewFormItem("Город", cityEntry),
@@ -156,9 +158,11 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 	}
 	buttons.Add(save)
 
-	content := container.NewVBox(form, errLabel, buttons)
+	sizer := canvas.NewRectangle(color.Transparent)
+	sizer.SetMinSize(fyne.NewSize(440, 0))
+
+	content := container.NewVBox(sizer, form, errLabel, buttons)
 	d = dialog.NewCustomWithoutButtons(title, content, a.win)
-	d.Resize(fyne.NewSize(420, 420))
 	d.Show()
 }
 
@@ -166,7 +170,7 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 
 func (a *App) showAddRegionDialog(lat, lon float64) {
 	nameEntry := widget.NewEntry()
-	nameEntry.PlaceHolder = "Название карты (например: Одесская область)"
+	nameEntry.PlaceHolder = "Например: Одесская область"
 
 	zoomEntry := widget.NewEntry()
 	zoomEntry.SetText("12")
@@ -238,8 +242,10 @@ func (a *App) showAddRegionDialog(lat, lon float64) {
 	create.Importance = widget.HighImportance
 	cancel := widget.NewButton("Отмена", func() { d.Hide() })
 
-	content := container.NewVBox(form, errLabel, container.NewHBox(cancel, create))
+	sizer := canvas.NewRectangle(color.Transparent)
+	sizer.SetMinSize(fyne.NewSize(440, 0))
+
+	content := container.NewVBox(sizer, form, errLabel, container.NewHBox(cancel, create))
 	d = dialog.NewCustomWithoutButtons("Новая карта", content, a.win)
-	d.Resize(fyne.NewSize(420, 360))
 	d.Show()
 }

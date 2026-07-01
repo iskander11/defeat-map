@@ -23,6 +23,12 @@ var (
 	colInputBg    = color.NRGBA{R: 0x1a, G: 0x1f, B: 0x27, A: 0xff}
 	colSeparator  = color.NRGBA{R: 0x2a, G: 0x31, B: 0x3b, A: 0xff}
 	colSuccess    = color.NRGBA{R: 0x3d, G: 0xa3, B: 0x5f, A: 0xff}
+	// colOverlayBg is used for dialogs, dropdown/menu popups and list
+	// headers — without an explicit dark value here Fyne falls back to its
+	// built-in light-mode white, which combined with our always-light
+	// foreground text makes popup text unreadable (white on white).
+	colOverlayBg = color.NRGBA{R: 0x1e, G: 0x25, B: 0x2f, A: 0xff}
+	colShadow    = color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x99}
 )
 
 func (m *modernTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
@@ -51,6 +57,12 @@ func (m *modernTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant)
 		return color.NRGBA{R: 0x8a, G: 0x92, B: 0x9d, A: 0xff}
 	case theme.ColorNameScrollBar:
 		return color.NRGBA{R: 0x3a, G: 0x42, B: 0x4e, A: 0xaa}
+	case theme.ColorNameOverlayBackground, theme.ColorNameMenuBackground, theme.ColorNameHeaderBackground:
+		return colOverlayBg
+	case theme.ColorNameShadow:
+		return colShadow
+	case theme.ColorNameDisabledButton:
+		return colButton
 	}
 	return theme.DefaultTheme().Color(name, variant)
 }
