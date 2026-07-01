@@ -9,8 +9,8 @@ import (
 const (
 	// DefaultSource is the standard OSM raster tile layer (includes street
 	// labels at all zoom levels where they are meaningful).
-	DefaultSource   = "osm"
-	DefaultTileURL  = "https://tile.openstreetmap.org/%d/%d/%d.png"
+	DefaultSource    = "osm"
+	DefaultTileURL   = "https://tile.openstreetmap.org/%d/%d/%d.png"
 	DefaultUserAgent = "DefeatMapApp/1.0 (+contact: iskandercapital@gmail.com)"
 )
 

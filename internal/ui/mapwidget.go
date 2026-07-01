@@ -21,6 +21,12 @@ type tileKey struct{ z, x, y int }
 // MapWidget is a custom interactive slippy map: drag to pan, scroll to zoom
 // (anchored under the cursor), tap to drop a pin, colored markers for
 // logged incidents, and an OSM attribution badge as required by ODbL.
+//
+// The renderer keeps the number of canvas objects it emits as small as
+// possible (tight tile buffer, cached/reused tile images) — Fyne's canvas
+// silently stops drawing objects past a certain count in one widget's
+// object list, and this map can accumulate many incident markers over the
+// lifetime of the app, so object count needs to stay well under that.
 type MapWidget struct {
 	widget.BaseWidget
 
@@ -33,13 +39,10 @@ type MapWidget struct {
 	centerLon float64
 	size      fyne.Size
 
-	bounds        *geo.BBox
-	onOutOfBounds func(lat, lon float64)
-	outOfBoundsFired bool
-
-	addPinMode bool
-	onPick     func(lat, lon float64)
-	onMarkerTap func(id string)
+	addPinMode    bool
+	onPick        func(lat, lon float64)
+	onMarkerTap   func(id string)
+	onZoomChanged func(zoom int)
 
 	incidents []store.Incident
 
@@ -73,9 +76,12 @@ func (m *MapWidget) CreateRenderer() fyne.WidgetRenderer {
 func (m *MapWidget) SetView(lat, lon float64, zoom int) {
 	m.mu.Lock()
 	m.centerLat, m.centerLon, m.zoom = lat, lon, clampInt(zoom, m.minZoom, m.maxZoom)
-	m.outOfBoundsFired = false
+	z := m.zoom
 	m.mu.Unlock()
 	m.Refresh()
+	if m.onZoomChanged != nil {
+		m.onZoomChanged(z)
+	}
 }
 
 func (m *MapWidget) SetProvider(p *maptiles.Provider) {
@@ -87,16 +93,9 @@ func (m *MapWidget) SetProvider(p *maptiles.Provider) {
 	m.Refresh()
 }
 
-func (m *MapWidget) SetBounds(b *geo.BBox) {
-	m.mu.Lock()
-	m.bounds = b
-	m.outOfBoundsFired = false
-	m.mu.Unlock()
-}
-
-func (m *MapWidget) SetOnOutOfBounds(cb func(lat, lon float64)) { m.onOutOfBounds = cb }
-func (m *MapWidget) SetOnPick(cb func(lat, lon float64))        { m.onPick = cb }
-func (m *MapWidget) SetOnMarkerTap(cb func(id string))          { m.onMarkerTap = cb }
+func (m *MapWidget) SetOnPick(cb func(lat, lon float64)) { m.onPick = cb }
+func (m *MapWidget) SetOnMarkerTap(cb func(id string))   { m.onMarkerTap = cb }
+func (m *MapWidget) SetOnZoomChanged(cb func(zoom int))  { m.onZoomChanged = cb }
 
 func (m *MapWidget) SetAddPinMode(v bool) { m.addPinMode = v }
 func (m *MapWidget) AddPinMode() bool     { return m.addPinMode }
@@ -145,6 +144,9 @@ func (m *MapWidget) zoomAt(anchor fyne.Position, delta int) {
 	m.centerLon, m.centerLat = geo.TileToLonLat(ctx, cty, newZoom)
 	m.mu.Unlock()
 	m.Refresh()
+	if m.onZoomChanged != nil {
+		m.onZoomChanged(newZoom)
+	}
 }
 
 func clampInt(v, lo, hi int) int {
@@ -169,24 +171,10 @@ func (m *MapWidget) Dragged(ev *fyne.DragEvent) {
 	m.Refresh()
 }
 
-func (m *MapWidget) DragEnd() {
-	m.checkBounds()
-}
-
-func (m *MapWidget) checkBounds() {
-	if m.bounds == nil || m.onOutOfBounds == nil {
-		return
-	}
-	if m.centerLat < m.bounds.MinLat || m.centerLat > m.bounds.MaxLat ||
-		m.centerLon < m.bounds.MinLon || m.centerLon > m.bounds.MaxLon {
-		if !m.outOfBoundsFired {
-			m.outOfBoundsFired = true
-			m.onOutOfBounds(m.centerLat, m.centerLon)
-		}
-	} else {
-		m.outOfBoundsFired = false
-	}
-}
+// DragEnd satisfies fyne.Draggable; panning freely never needs a follow-up
+// action here — tiles for wherever the user pans are simply fetched and
+// cached on demand by the map renderer.
+func (m *MapWidget) DragEnd() {}
 
 func (m *MapWidget) Scrolled(ev *fyne.ScrollEvent) {
 	if ev.Scrolled.DY > 0 {
@@ -221,7 +209,6 @@ func (m *MapWidget) Tapped(ev *fyne.PointEvent) {
 	if bestID != "" && bestDist <= hit && m.onMarkerTap != nil {
 		m.onMarkerTap(bestID)
 	}
-	m.checkBounds()
 }
 
 // ---- renderer ----
@@ -229,6 +216,10 @@ func (m *MapWidget) Tapped(ev *fyne.PointEvent) {
 type mapRenderer struct {
 	widget  *MapWidget
 	objects []fyne.CanvasObject
+
+	// markerPool is reused across rebuild() calls so the object count stays
+	// bounded to len(incidents) instead of growing with every redraw.
+	markerPool []*canvas.Circle
 }
 
 func (r *mapRenderer) Layout(size fyne.Size) {
@@ -238,10 +229,10 @@ func (r *mapRenderer) Layout(size fyne.Size) {
 	r.rebuild()
 }
 
-func (r *mapRenderer) MinSize() fyne.Size { return fyne.NewSize(320, 240) }
-func (r *mapRenderer) Refresh()           { r.rebuild() }
+func (r *mapRenderer) MinSize() fyne.Size           { return fyne.NewSize(320, 240) }
+func (r *mapRenderer) Refresh()                     { r.rebuild() }
 func (r *mapRenderer) Objects() []fyne.CanvasObject { return r.objects }
-func (r *mapRenderer) Destroy()           {}
+func (r *mapRenderer) Destroy()                     {}
 
 func (r *mapRenderer) rebuild() {
 	w := r.widget
@@ -250,7 +241,7 @@ func (r *mapRenderer) rebuild() {
 	zoom := w.zoom
 	centerLon, centerLat := w.centerLon, w.centerLat
 	provider := w.provider
-	incidents := append([]store.Incident{}, w.incidents...)
+	incidents := w.incidents
 	w.mu.Unlock()
 
 	if size.Width <= 0 || size.Height <= 0 || provider == nil {
@@ -265,8 +256,10 @@ func (r *mapRenderer) rebuild() {
 	cx, cy := geo.LonLatToTile(centerLon, centerLat, zoom)
 	n := int(math.Exp2(float64(zoom)))
 
-	tilesAcross := int(size.Width/tilePx) + 3
-	tilesDown := int(size.Height/tilePx) + 3
+	// Only cover the visible area plus a single tile of buffer on each
+	// side — over-fetching tiles was blowing past the object budget below.
+	tilesAcross := int(math.Ceil(float64(size.Width)/float64(tilePx))) + 1
+	tilesDown := int(math.Ceil(float64(size.Height)/float64(tilePx))) + 1
 	startTX := int(math.Floor(cx)) - tilesAcross/2
 	startTY := int(math.Floor(cy)) - tilesDown/2
 
@@ -281,6 +274,9 @@ func (r *mapRenderer) rebuild() {
 
 			screenX := (float32(tx)-float32(cx))*tilePx + size.Width/2
 			screenY := (float32(ty)-float32(cy))*tilePx + size.Height/2
+			if screenX < -tilePx || screenX > size.Width || screenY < -tilePx || screenY > size.Height {
+				continue
+			}
 
 			obj := r.tileObject(zoom, wrappedX, ty)
 			obj.Resize(fyne.NewSize(tilePx+1, tilePx+1))
@@ -289,20 +285,24 @@ func (r *mapRenderer) rebuild() {
 		}
 	}
 
-	// markers
-	for _, in := range incidents {
+	// markers — reuse a pool of *canvas.Circle across redraws so the
+	// object count only grows with the number of incidents, never with
+	// how many times the map has been panned/zoomed/refreshed.
+	for len(r.markerPool) < len(incidents) {
+		c := canvas.NewCircle(colPrimary)
+		c.StrokeColor = colForeground
+		c.StrokeWidth = 1.5
+		r.markerPool = append(r.markerPool, c)
+	}
+	const markerR = 7
+	for i, in := range incidents {
+		pin := r.markerPool[i]
 		tx, ty := geo.LonLatToTile(in.Lon, in.Lat, zoom)
 		screenX := (float32(tx)-float32(cx))*tilePx + size.Width/2
 		screenY := (float32(ty)-float32(cy))*tilePx + size.Height/2
-		if screenX < -20 || screenX > size.Width+20 || screenY < -20 || screenY > size.Height+20 {
-			continue
-		}
-		pin := canvas.NewCircle(colPrimary)
-		pin.StrokeColor = colForeground
-		pin.StrokeWidth = 1.5
-		const r2 = 7
-		pin.Resize(fyne.NewSize(r2*2, r2*2))
-		pin.Move(fyne.NewPos(screenX-r2, screenY-r2))
+		pin.Resize(fyne.NewSize(markerR*2, markerR*2))
+		pin.Move(fyne.NewPos(screenX-markerR, screenY-markerR))
+		pin.Hidden = screenX < -20 || screenX > size.Width+20 || screenY < -20 || screenY > size.Height+20
 		objects = append(objects, pin)
 	}
 

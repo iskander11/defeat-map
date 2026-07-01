@@ -18,16 +18,20 @@ var ruMonths = []string{"Январь", "Февраль", "Март", "Апре�
 var ruWeekdays = []string{"Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"}
 
 // CalendarWidget shows a month grid and highlights days that have at least
-// one logged incident. Clicking a day invokes OnDaySelected.
+// one logged incident. Click a day to select it; click a second, later day
+// to extend the selection into a range. OnRangeSelected fires after each
+// click with the current (start, end) — both equal for a single day.
 type CalendarWidget struct {
 	widget.BaseWidget
 
-	year, month int // month: 1-12
+	year, month int            // month: 1-12
 	counts      map[string]int // "YYYY-MM-DD" -> incident count
-	selected    string
 
-	OnDaySelected  func(date string)
-	OnMonthChanged func(year, month int)
+	rangeStart, rangeEnd string
+	awaitingEnd          bool
+
+	OnRangeSelected func(start, end string)
+	OnMonthChanged  func(year, month int)
 
 	title *widget.Label
 	grid  *fyne.Container
@@ -74,9 +78,33 @@ func (c *CalendarWidget) SetCounts(counts map[string]int) {
 	c.refreshGrid()
 }
 
-func (c *CalendarWidget) SetSelected(date string) {
-	c.selected = date
+// SetRange sets the selected period without firing OnRangeSelected (used to
+// reflect a range chosen or cleared elsewhere in the app).
+func (c *CalendarWidget) SetRange(start, end string) {
+	c.rangeStart, c.rangeEnd = start, end
+	c.awaitingEnd = false
 	c.refreshGrid()
+}
+
+// pickDate implements the two-click range picker: the first click starts a
+// new single-day selection, the second click extends it into a range
+// (swapping start/end if the user picked an earlier day second).
+func (c *CalendarWidget) pickDate(date string) {
+	if !c.awaitingEnd {
+		c.rangeStart, c.rangeEnd = date, date
+		c.awaitingEnd = true
+	} else {
+		if date < c.rangeStart {
+			c.rangeStart, c.rangeEnd = date, c.rangeStart
+		} else {
+			c.rangeEnd = date
+		}
+		c.awaitingEnd = false
+	}
+	c.refreshGrid()
+	if c.OnRangeSelected != nil {
+		c.OnRangeSelected(c.rangeStart, c.rangeEnd)
+	}
 }
 
 func (c *CalendarWidget) shiftMonth(delta int) {
@@ -113,17 +141,22 @@ func (c *CalendarWidget) refreshGrid() {
 	for d := 1; d <= daysInMonth; d++ {
 		date := fmt.Sprintf("%04d-%02d-%02d", c.year, c.month, d)
 		count := c.counts[date]
-		c.grid.Add(c.dayCell(d, date, count, date == today, date == c.selected))
+		c.grid.Add(c.dayCell(d, date, count, date == today))
 	}
 
 	c.root.Refresh()
 }
 
-func (c *CalendarWidget) dayCell(day int, date string, count int, isToday, isSelected bool) fyne.CanvasObject {
+func (c *CalendarWidget) dayCell(day int, date string, count int, isToday bool) fyne.CanvasObject {
+	isEndpoint := c.rangeStart != "" && (date == c.rangeStart || date == c.rangeEnd)
+	inRange := c.rangeStart != "" && date > c.rangeStart && date < c.rangeEnd
+
 	var bgColor color.Color = colButton
 	switch {
-	case isSelected:
+	case isEndpoint:
 		bgColor = colPrimary
+	case inRange:
+		bgColor = color.NRGBA{R: 0xe4, G: 0x4a, B: 0x3a, A: 0x40}
 	case count > 0:
 		bgColor = incidentHeatColor(count)
 	}
@@ -135,16 +168,10 @@ func (c *CalendarWidget) dayCell(day int, date string, count int, isToday, isSel
 		bg.StrokeWidth = 1.5
 	}
 
-	label := widget.NewLabelWithStyle(fmt.Sprint(day), fyne.TextAlignCenter, fyne.TextStyle{Bold: count > 0 || isSelected})
+	label := widget.NewLabelWithStyle(fmt.Sprint(day), fyne.TextAlignCenter, fyne.TextStyle{Bold: count > 0 || isEndpoint})
 
 	stack := container.NewStack(bg, container.NewPadded(label))
-	btn := widget.NewButton("", func() {
-		c.selected = date
-		c.refreshGrid()
-		if c.OnDaySelected != nil {
-			c.OnDaySelected(date)
-		}
-	})
+	btn := widget.NewButton("", func() { c.pickDate(date) })
 	btn.Importance = widget.LowImportance
 
 	cell := container.NewStack(stack, btn)

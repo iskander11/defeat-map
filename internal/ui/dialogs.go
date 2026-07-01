@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"image/color"
+	"sort"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -247,5 +249,82 @@ func (a *App) showAddRegionDialog(lat, lon float64) {
 
 	content := container.NewVBox(sizer, form, errLabel, container.NewHBox(cancel, create))
 	d = dialog.NewCustomWithoutButtons("Новая карта", content, a.win)
+	d.Show()
+}
+
+// ---- report dialog ----
+
+// showReportDialog compiles a report of incidents within [start, end]
+// (inclusive; an empty start means "all incidents") for the current region.
+func (a *App) showReportDialog(start, end string) {
+	all := a.st.IncidentsByRegion(a.currentRegion.ID)
+	var items []store.Incident
+	for _, in := range all {
+		if start != "" && (in.Date < start || in.Date > end) {
+			continue
+		}
+		items = append(items, in)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Date < items[j].Date })
+
+	period := "за всё время"
+	if start != "" && start == end {
+		period = "за " + start
+	} else if start != "" {
+		period = fmt.Sprintf("с %s по %s", start, end)
+	}
+
+	header := widget.NewLabelWithStyle(
+		fmt.Sprintf("Отчёт по происшествиям %s\nВсего: %d", period, len(items)),
+		fyne.TextAlignLeading, fyne.TextStyle{Bold: true},
+	)
+
+	byCity := map[string]int{}
+	for _, in := range items {
+		byCity[in.City]++
+	}
+	cityNames := make([]string, 0, len(byCity))
+	for c := range byCity {
+		cityNames = append(cityNames, c)
+	}
+	sort.Slice(cityNames, func(i, j int) bool {
+		if byCity[cityNames[i]] != byCity[cityNames[j]] {
+			return byCity[cityNames[i]] > byCity[cityNames[j]]
+		}
+		return cityNames[i] < cityNames[j]
+	})
+	var breakdown strings.Builder
+	for i, c := range cityNames {
+		if i > 0 {
+			breakdown.WriteString("   ")
+		}
+		fmt.Fprintf(&breakdown, "%s: %d", c, byCity[c])
+	}
+	breakdownLabel := widget.NewLabel(breakdown.String())
+	breakdownLabel.Wrapping = fyne.TextWrapWord
+
+	var d dialog.Dialog
+
+	reportList := widget.NewList(
+		func() int { return len(items) },
+		func() fyne.CanvasObject { return newIncidentRow() },
+		func(i widget.ListItemID, o fyne.CanvasObject) { bindIncidentRow(o, items[i]) },
+	)
+	reportList.OnSelected = func(i widget.ListItemID) {
+		d.Hide()
+		a.jumpToIncident(items[i])
+	}
+
+	listSizer := canvas.NewRectangle(color.Transparent)
+	listSizer.SetMinSize(fyne.NewSize(0, 340))
+	listArea := container.NewStack(listSizer, reportList)
+
+	sizer := canvas.NewRectangle(color.Transparent)
+	sizer.SetMinSize(fyne.NewSize(480, 0))
+
+	closeBtn := widget.NewButton("Закрыть", func() { d.Hide() })
+
+	content := container.NewVBox(sizer, header, breakdownLabel, widget.NewSeparator(), listArea, closeBtn)
+	d = dialog.NewCustomWithoutButtons("Отчёт", content, a.win)
 	d.Show()
 }
