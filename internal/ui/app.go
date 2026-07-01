@@ -2,8 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -30,19 +30,18 @@ type App struct {
 	provider         *maptiles.Provider
 	bundleRootCrimea string
 
-	regions       []store.Region
 	currentRegion store.Region
 
 	mapWidget      *MapWidget
 	calendarWidget *CalendarWidget
 
-	regionSelect *widget.Select
-	addBtn       *widget.Button
-	searchEntry  *widget.Entry
-	cityList     *widget.List
-	incidentList *widget.List
-	periodLabel  *widget.Label
-	zoomLabel    *widget.Label
+	providerSelect *widget.Select
+	searchEntry    *widget.Entry
+	cityList       *widget.List
+	incidentList   *widget.List
+	periodLabel    *widget.Label
+	zoomLabel      *widget.Label
+	coordLabel     *widget.Label
 
 	filteredCities       []store.City
 	filteredIncidents    []store.Incident
@@ -54,17 +53,18 @@ type App struct {
 func NewApp(win fyne.Window, st *store.Store, bundleRootCrimea string) *App {
 	a := &App{win: win, st: st, bundleRootCrimea: bundleRootCrimea}
 	a.ensureCrimeaRegion()
-	a.regions = st.Regions()
-	a.currentRegion = a.regions[0]
+	a.currentRegion = st.Regions()[0]
 
 	cache := maptiles.NewDiskCache(mustTileCacheDir())
 	fetcher := maptiles.NewFetcher(maptiles.DefaultUserAgent)
 	a.provider = maptiles.NewProvider(cache, fetcher, bundleRootCrimea, maptiles.DefaultSource, maptiles.DefaultTileURL)
 
 	a.mapWidget = NewMapWidget(a.provider)
-	a.mapWidget.SetOnPick(a.onMapPick)
+	a.mapWidget.SetOnContextMenu(a.onMapContextMenu)
 	a.mapWidget.SetOnMarkerTap(a.onMarkerTap)
 	a.mapWidget.SetOnZoomChanged(a.onZoomChanged)
+	a.mapWidget.SetOnHover(a.onHover)
+	a.mapWidget.SetOnHoverEnd(a.onHoverEnd)
 
 	a.calendarWidget = NewCalendarWidget()
 	a.calendarWidget.OnRangeSelected = a.onRangeSelected
@@ -112,7 +112,7 @@ func (a *App) Content() fyne.CanvasObject {
 	sidebar := a.buildSidebar()
 	top := a.buildTopBar()
 
-	mapArea := container.NewStack(a.mapWidget, a.buildZoomOverlay())
+	mapArea := container.NewStack(a.mapWidget, a.buildZoomOverlay(), a.buildCoordOverlay(), a.buildProviderOverlay())
 
 	split := container.NewHSplit(sidebar, mapArea)
 	split.Offset = 0.26
@@ -143,27 +143,72 @@ func (a *App) buildZoomOverlay() fyne.CanvasObject {
 	return container.NewVBox(container.NewPadded(fixedCard), layout.NewSpacer())
 }
 
-func (a *App) buildTopBar() fyne.CanvasObject {
-	title := widget.NewLabelWithStyle("Карта поражений", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+// buildCoordOverlay shows the coordinates under the cursor (updated on
+// hover) just below the zoom cluster, in a few common formats. It is blank
+// until the mouse first moves over the map.
+func (a *App) buildCoordOverlay() fyne.CanvasObject {
+	a.coordLabel = widget.NewLabel("")
+	a.coordLabel.Wrapping = fyne.TextWrapOff
 
-	a.regionSelect = widget.NewSelect(a.regionNames(), a.onRegionSelected)
-	a.regionSelect.SetSelected(a.currentRegion.Name)
+	card := container.NewStack(
+		canvas.NewRectangle(colOverlayBg),
+		container.NewPadded(a.coordLabel),
+	)
 
-	newRegionBtn := widget.NewButtonWithIcon("Добавить карту", theme.ContentAddIcon(), a.onAddRegionClicked)
+	topOffset := canvas.NewRectangle(color.Transparent)
+	topOffset.SetMinSize(fyne.NewSize(0, 160))
 
-	a.addBtn = widget.NewButtonWithIcon("Добавить происшествие", theme.ContentAddIcon(), a.onToggleAddIncident)
-	a.addBtn.Importance = widget.HighImportance
-
-	right := container.NewHBox(a.regionSelect, newRegionBtn, a.addBtn)
-	return container.NewBorder(nil, widget.NewSeparator(), nil, right, container.NewPadded(title))
+	return container.NewVBox(topOffset, container.NewPadded(card), layout.NewSpacer())
 }
 
-func (a *App) regionNames() []string {
-	names := make([]string, len(a.regions))
-	for i, r := range a.regions {
-		names[i] = r.Name
+func (a *App) onHover(lat, lon float64) {
+	if a.coordLabel == nil {
+		return
 	}
-	return names
+	text := fmt.Sprintf("WGS84: %s\nDMS: %s\nUTM: %s",
+		geo.FormatDecimal(lat, lon), geo.FormatDMS(lat, lon), geo.FormatUTM(lat, lon))
+	a.coordLabel.SetText(text)
+}
+
+func (a *App) onHoverEnd() {
+	if a.coordLabel != nil {
+		a.coordLabel.SetText("")
+	}
+}
+
+// buildProviderOverlay is the map-source picker, stacked below the
+// coordinate readout using the same top-left-pinned fixed-size card
+// pattern as the zoom cluster (Border's edge slots do not reliably keep
+// content on-screen once the row grows past a certain width, so this
+// avoids that layout entirely).
+func (a *App) buildProviderOverlay() fyne.CanvasObject {
+	names := make([]string, len(maptiles.TileSources))
+	for i, s := range maptiles.TileSources {
+		names[i] = s.Name
+	}
+	a.providerSelect = widget.NewSelect(names, a.onProviderSelected)
+	a.providerSelect.SetSelected(maptiles.TileSources[0].Name)
+
+	label := widget.NewLabelWithStyle("Карта", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+	cluster := container.NewVBox(label, a.providerSelect)
+	card := container.NewStack(
+		canvas.NewRectangle(colOverlayBg),
+		container.NewPadded(cluster),
+	)
+	fixedCard := container.New(layout.NewGridWrapLayout(fyne.NewSize(190, 74)), card)
+
+	topOffset := canvas.NewRectangle(color.Transparent)
+	topOffset.SetMinSize(fyne.NewSize(0, 260))
+
+	return container.NewVBox(topOffset, container.NewPadded(fixedCard), layout.NewSpacer())
+}
+
+func (a *App) buildTopBar() fyne.CanvasObject {
+	title := widget.NewLabelWithStyle("Карта поражений", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	hint := widget.NewLabelWithStyle("ПКМ по карте — добавить происшествие", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
+
+	titleBox := container.NewVBox(title, hint)
+	return container.NewBorder(nil, widget.NewSeparator(), nil, nil, container.NewPadded(titleBox))
 }
 
 func (a *App) buildSidebar() fyne.CanvasObject {
@@ -317,20 +362,6 @@ func (a *App) onRangeSelected(start, end string) {
 	a.refreshIncidentList()
 }
 
-func (a *App) onRegionSelected(name string) {
-	for _, r := range a.regions {
-		if r.Name == name {
-			a.currentRegion = r
-			a.applyRegionToMap(r)
-			a.searchEntry.SetText("")
-			a.clearRange()
-			a.refreshCities()
-			a.refreshIncidentList()
-			return
-		}
-	}
-}
-
 func (a *App) applyRegionToMap(r store.Region) {
 	bundle := ""
 	if r.BundleDir == "crimea" {
@@ -341,26 +372,21 @@ func (a *App) applyRegionToMap(r store.Region) {
 	a.mapWidget.SetView(r.CenterLat, r.CenterLon, r.DefaultZoom)
 }
 
-func (a *App) onToggleAddIncident() {
-	newState := !a.mapWidget.AddPinMode()
-	a.mapWidget.SetAddPinMode(newState)
-	if newState {
-		a.addBtn.SetText("Кликните на карте...")
-		dialog.ShowInformation("Добавление происшествия", "Кликните по карте в нужном месте, чтобы указать точку происшествия.", a.win)
-	} else {
-		a.addBtn.SetText("Добавить происшествие")
-	}
-}
-
-func (a *App) onMapPick(lat, lon float64) {
-	a.mapWidget.SetAddPinMode(false)
-	a.addBtn.SetText("Добавить происшествие")
-	a.openIncidentDialog(&store.Incident{
-		RegionID: a.currentRegion.ID,
-		Lat:      lat,
-		Lon:      lon,
-		Date:     time.Now().Format("2006-01-02"),
-	})
+// onMapContextMenu is called on right-click over the map: it shows a small
+// context menu at the click position with an "Добавить происшествие" entry
+// that opens the incident form for that exact spot.
+func (a *App) onMapContextMenu(absPos fyne.Position, lat, lon float64) {
+	menu := fyne.NewMenu("",
+		fyne.NewMenuItem("Добавить происшествие", func() {
+			a.openIncidentDialog(&store.Incident{
+				RegionID: a.currentRegion.ID,
+				Lat:      lat,
+				Lon:      lon,
+				Date:     time.Now().Format("2006-01-02"),
+			})
+		}),
+	)
+	widget.ShowPopUpMenuAtPosition(menu, a.win.Canvas(), absPos)
 }
 
 func (a *App) onMarkerTap(id string) {
@@ -373,8 +399,26 @@ func (a *App) onMarkerTap(id string) {
 	}
 }
 
-func (a *App) onAddRegionClicked() {
-	a.showAddRegionDialog(a.mapWidget.centerLat, a.mapWidget.centerLon)
+// onProviderSelected switches the active map tile source. Each source has
+// its own on-disk cache (by ID), and the bundled offline Crimea overview
+// only applies to OpenStreetMap, so it's cleared for the others.
+func (a *App) onProviderSelected(name string) {
+	for _, s := range maptiles.TileSources {
+		if s.Name != name {
+			continue
+		}
+		a.provider.SetSource(s)
+		if s.ID == maptiles.DefaultSource {
+			a.provider.SetBundleRoot(a.bundleRootCrimea)
+		} else {
+			a.provider.SetBundleRoot("")
+		}
+		a.mapWidget.SetProvider(a.provider)
+		if s.Note != "" {
+			dialog.ShowInformation("Источник карты", s.Note, a.win)
+		}
+		return
+	}
 }
 
 // jumpToIncident centers the map on an incident's location at a comfortable
@@ -391,21 +435,5 @@ func (a *App) onBuildReport() {
 func (a *App) onZoomChanged(zoom int) {
 	if a.zoomLabel != nil {
 		a.zoomLabel.SetText(fmt.Sprint(zoom))
-	}
-}
-
-func (a *App) switchToRegion(id string) {
-	a.regions = a.st.Regions()
-	sort.Slice(a.regions, func(i, j int) bool { return a.regions[i].Name < a.regions[j].Name })
-	a.regionSelect.SetOptions(a.regionNames())
-	for _, r := range a.regions {
-		if r.ID == id {
-			a.currentRegion = r
-			a.regionSelect.SetSelected(r.Name)
-			a.applyRegionToMap(r)
-			a.refreshCities()
-			a.refreshIncidentList()
-			return
-		}
 	}
 }

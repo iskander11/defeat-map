@@ -7,6 +7,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
 
 	"defeatmap/internal/geo"
@@ -39,10 +40,11 @@ type MapWidget struct {
 	centerLon float64
 	size      fyne.Size
 
-	addPinMode    bool
-	onPick        func(lat, lon float64)
+	onContextMenu func(absPos fyne.Position, lat, lon float64)
 	onMarkerTap   func(id string)
 	onZoomChanged func(zoom int)
+	onHover       func(lat, lon float64)
+	onHoverEnd    func()
 
 	incidents []store.Incident
 
@@ -93,12 +95,19 @@ func (m *MapWidget) SetProvider(p *maptiles.Provider) {
 	m.Refresh()
 }
 
-func (m *MapWidget) SetOnPick(cb func(lat, lon float64)) { m.onPick = cb }
-func (m *MapWidget) SetOnMarkerTap(cb func(id string))   { m.onMarkerTap = cb }
-func (m *MapWidget) SetOnZoomChanged(cb func(zoom int))  { m.onZoomChanged = cb }
+// SetOnContextMenu is called on right-click with the click's absolute
+// (window-relative) position — for showing a context menu there — plus the
+// geographic coordinate under the cursor.
+func (m *MapWidget) SetOnContextMenu(cb func(absPos fyne.Position, lat, lon float64)) {
+	m.onContextMenu = cb
+}
+func (m *MapWidget) SetOnMarkerTap(cb func(id string))  { m.onMarkerTap = cb }
+func (m *MapWidget) SetOnZoomChanged(cb func(zoom int)) { m.onZoomChanged = cb }
 
-func (m *MapWidget) SetAddPinMode(v bool) { m.addPinMode = v }
-func (m *MapWidget) AddPinMode() bool     { return m.addPinMode }
+// SetOnHover is called continuously while the mouse moves over the map with
+// the coordinate under the cursor, and SetOnHoverEnd once when it leaves.
+func (m *MapWidget) SetOnHover(cb func(lat, lon float64)) { m.onHover = cb }
+func (m *MapWidget) SetOnHoverEnd(cb func())              { m.onHoverEnd = cb }
 
 func (m *MapWidget) SetIncidents(list []store.Incident) {
 	m.mu.Lock()
@@ -185,13 +194,6 @@ func (m *MapWidget) Scrolled(ev *fyne.ScrollEvent) {
 }
 
 func (m *MapWidget) Tapped(ev *fyne.PointEvent) {
-	if m.addPinMode {
-		lon, lat := m.pixelToLonLat(ev.Position)
-		if m.onPick != nil {
-			m.onPick(lat, lon)
-		}
-		return
-	}
 	// hit-test markers (closest within 10px)
 	const hit = 10
 	var bestID string
@@ -209,6 +211,35 @@ func (m *MapWidget) Tapped(ev *fyne.PointEvent) {
 	if bestID != "" && bestDist <= hit && m.onMarkerTap != nil {
 		m.onMarkerTap(bestID)
 	}
+}
+
+// TappedSecondary (right-click) is how the user adds a new incident: it
+// hands the click's absolute position and the geographic coordinate under
+// it to the app, which shows a small context menu there.
+func (m *MapWidget) TappedSecondary(ev *fyne.PointEvent) {
+	if m.onContextMenu == nil {
+		return
+	}
+	lon, lat := m.pixelToLonLat(ev.Position)
+	m.onContextMenu(ev.AbsolutePosition, lat, lon)
+}
+
+// ---- desktop.Hoverable: live coordinate readout under the cursor ----
+
+func (m *MapWidget) MouseIn(ev *desktop.MouseEvent)    { m.reportHover(ev.Position) }
+func (m *MapWidget) MouseMoved(ev *desktop.MouseEvent) { m.reportHover(ev.Position) }
+func (m *MapWidget) MouseOut() {
+	if m.onHoverEnd != nil {
+		m.onHoverEnd()
+	}
+}
+
+func (m *MapWidget) reportHover(pos fyne.Position) {
+	if m.onHover == nil {
+		return
+	}
+	lon, lat := m.pixelToLonLat(pos)
+	m.onHover(lat, lon)
 }
 
 // ---- renderer ----

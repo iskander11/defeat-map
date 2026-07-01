@@ -38,7 +38,11 @@ func main() {
 
 	win := a.NewWindow("Карта поражений — Крым")
 	win.SetIcon(icon)
-	win.Resize(fyne.NewSize(1320, 860))
+	// Kept modest on purpose: Fyne's CenterOnScreen can occasionally
+	// mis-detect monitor bounds (picks the wrong/a stale monitor) right
+	// after a window is created, which would push a larger window's edge
+	// off-screen. This size stays fully on-screen even if that happens.
+	win.Resize(fyne.NewSize(1150, 715))
 	win.SetMaster()
 	win.CenterOnScreen()
 

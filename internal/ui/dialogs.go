@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	"defeatmap/internal/geo"
 	"defeatmap/internal/store"
 )
 
@@ -84,11 +85,16 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 	descEntry.Wrapping = fyne.TextWrapWord
 	descEntry.SetMinRowsVisible(3)
 
+	coordText := fmt.Sprintf("%s  •  %s", geo.FormatDecimal(in.Lat, in.Lon), geo.FormatUTM(in.Lat, in.Lon))
+	coordLabel := widget.NewLabel(coordText)
+	coordLabel.Wrapping = fyne.TextWrapOff
+
 	form := widget.NewForm(
 		widget.NewFormItem("Город", cityEntry),
 		widget.NewFormItem("Объект", objEntry),
 		widget.NewFormItem("Дата", dateEntry),
 		widget.NewFormItem("Доп. информация", descEntry),
+		widget.NewFormItem("Координаты", coordLabel),
 	)
 
 	title := "Новое происшествие"
@@ -165,90 +171,6 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 
 	content := container.NewVBox(sizer, form, errLabel, buttons)
 	d = dialog.NewCustomWithoutButtons(title, content, a.win)
-	d.Show()
-}
-
-// ---- add region dialog ----
-
-func (a *App) showAddRegionDialog(lat, lon float64) {
-	nameEntry := widget.NewEntry()
-	nameEntry.PlaceHolder = "Например: Одесская область"
-
-	zoomEntry := widget.NewEntry()
-	zoomEntry.SetText("12")
-
-	latEntry := widget.NewEntry()
-	latEntry.SetText(fmt.Sprintf("%.5f", lat))
-	lonEntry := widget.NewEntry()
-	lonEntry.SetText(fmt.Sprintf("%.5f", lon))
-
-	radiusEntry := widget.NewEntry()
-	radiusEntry.SetText("0.6")
-	radiusEntry.PlaceHolder = "Радиус области в градусах (~60 км)"
-
-	form := widget.NewForm(
-		widget.NewFormItem("Название", nameEntry),
-		widget.NewFormItem("Широта центра", latEntry),
-		widget.NewFormItem("Долгота центра", lonEntry),
-		widget.NewFormItem("Радиус (°)", radiusEntry),
-		widget.NewFormItem("Зум по умолчанию", zoomEntry),
-	)
-
-	var d dialog.Dialog
-	errLabel := canvas.NewText("", colPrimary)
-	errLabel.TextSize = 11
-
-	create := widget.NewButtonWithIcon("Создать", nil, func() {
-		var clat, clon, radius float64
-		var zoom int
-		if _, err := fmt.Sscanf(latEntry.Text, "%f", &clat); err != nil {
-			errLabel.Text = "Некорректная широта"
-			errLabel.Refresh()
-			return
-		}
-		if _, err := fmt.Sscanf(lonEntry.Text, "%f", &clon); err != nil {
-			errLabel.Text = "Некорректная долгота"
-			errLabel.Refresh()
-			return
-		}
-		if _, err := fmt.Sscanf(radiusEntry.Text, "%f", &radius); err != nil || radius <= 0 {
-			radius = 0.6
-		}
-		if _, err := fmt.Sscanf(zoomEntry.Text, "%d", &zoom); err != nil || zoom < 3 || zoom > 19 {
-			zoom = 12
-		}
-		if nameEntry.Text == "" {
-			errLabel.Text = "Укажите название"
-			errLabel.Refresh()
-			return
-		}
-		r := store.Region{
-			ID:          "region-" + fmt.Sprint(time.Now().UnixNano()),
-			Name:        nameEntry.Text,
-			CenterLat:   clat,
-			CenterLon:   clon,
-			DefaultZoom: zoom,
-			MinLat:      clat - radius,
-			MaxLat:      clat + radius,
-			MinLon:      clon - radius*1.4,
-			MaxLon:      clon + radius*1.4,
-		}
-		if err := a.st.AddRegion(r); err != nil {
-			errLabel.Text = err.Error()
-			errLabel.Refresh()
-			return
-		}
-		a.switchToRegion(r.ID)
-		d.Hide()
-	})
-	create.Importance = widget.HighImportance
-	cancel := widget.NewButton("Отмена", func() { d.Hide() })
-
-	sizer := canvas.NewRectangle(color.Transparent)
-	sizer.SetMinSize(fyne.NewSize(440, 0))
-
-	content := container.NewVBox(sizer, form, errLabel, container.NewHBox(cancel, create))
-	d = dialog.NewCustomWithoutButtons("Новая карта", content, a.win)
 	d.Show()
 }
 
