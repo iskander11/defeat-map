@@ -8,7 +8,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -133,7 +132,7 @@ func (c *CalendarWidget) refreshGrid() {
 	daysInMonth := time.Date(c.year, time.Month(c.month)+1, 0, 0, 0, 0, 0, time.UTC).Day()
 
 	for i := 0; i < offset; i++ {
-		c.grid.Add(widget.NewLabel(""))
+		c.grid.Add(c.emptyCell())
 	}
 
 	today := time.Now().Format("2006-01-02")
@@ -170,12 +169,26 @@ func (c *CalendarWidget) dayCell(day int, date string, count int, isToday bool) 
 
 	label := widget.NewLabelWithStyle(fmt.Sprint(day), fyne.TextAlignCenter, fyne.TextStyle{Bold: count > 0 || isEndpoint})
 
-	stack := container.NewStack(bg, container.NewPadded(label))
 	btn := widget.NewButton("", func() { c.pickDate(date) })
 	btn.Importance = widget.LowImportance
 
-	cell := container.NewStack(stack, btn)
-	return container.New(layout.NewGridWrapLayout(fyne.NewSize(34, 30)), cell)
+	// A fixed min-height spacer keeps every cell (including blank offset
+	// cells) the same row height — GridWithColumns sizes all cells in the
+	// grid uniformly from the largest one, so this also fixes the layout
+	// for every other cell.
+	sizer := canvas.NewRectangle(color.Transparent)
+	sizer.SetMinSize(fyne.NewSize(0, 34))
+
+	return container.NewStack(sizer, bg, btn, container.NewCenter(label))
+}
+
+// emptyCell is a blank placeholder for the days before the 1st of the
+// month, structurally identical (in sizing terms) to a real day cell so
+// every row in the grid comes out the same height.
+func (c *CalendarWidget) emptyCell() fyne.CanvasObject {
+	sizer := canvas.NewRectangle(color.Transparent)
+	sizer.SetMinSize(fyne.NewSize(0, 34))
+	return container.NewStack(sizer)
 }
 
 // incidentHeatColor gives a slightly deeper red the more incidents a day has.
