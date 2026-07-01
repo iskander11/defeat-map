@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"math"
 	"sync"
 
@@ -47,6 +48,9 @@ type MapWidget struct {
 	onHoverEnd    func()
 
 	incidents []store.Incident
+
+	hasPending             bool
+	pendingLat, pendingLon float64
 
 	imgCache map[tileKey]*canvas.Image
 	loading  map[tileKey]bool
@@ -112,6 +116,25 @@ func (m *MapWidget) SetOnHoverEnd(cb func())              { m.onHoverEnd = cb }
 func (m *MapWidget) SetIncidents(list []store.Incident) {
 	m.mu.Lock()
 	m.incidents = list
+	m.mu.Unlock()
+	m.Refresh()
+}
+
+// SetPendingPoint shows a persistent marker at (lat, lon) — used while the
+// user is filling in the "add incident" form, so the chosen spot stays
+// visible on the map instead of disappearing the moment the context menu
+// closes. ClearPendingPoint removes it (called when that dialog closes).
+func (m *MapWidget) SetPendingPoint(lat, lon float64) {
+	m.mu.Lock()
+	m.hasPending = true
+	m.pendingLat, m.pendingLon = lat, lon
+	m.mu.Unlock()
+	m.Refresh()
+}
+
+func (m *MapWidget) ClearPendingPoint() {
+	m.mu.Lock()
+	m.hasPending = false
 	m.mu.Unlock()
 	m.Refresh()
 }
@@ -250,7 +273,9 @@ type mapRenderer struct {
 
 	// markerPool is reused across rebuild() calls so the object count stays
 	// bounded to len(incidents) instead of growing with every redraw.
-	markerPool []*canvas.Circle
+	markerPool  []*canvas.Circle
+	pendingMark *canvas.Circle
+	pendingHalo *canvas.Circle
 }
 
 func (r *mapRenderer) Layout(size fyne.Size) {
@@ -273,6 +298,8 @@ func (r *mapRenderer) rebuild() {
 	centerLon, centerLat := w.centerLon, w.centerLat
 	provider := w.provider
 	incidents := w.incidents
+	hasPending := w.hasPending
+	pendingLat, pendingLon := w.pendingLat, w.pendingLon
 	w.mu.Unlock()
 
 	if size.Width <= 0 || size.Height <= 0 || provider == nil {
@@ -335,6 +362,34 @@ func (r *mapRenderer) rebuild() {
 		pin.Move(fyne.NewPos(screenX-markerR, screenY-markerR))
 		pin.Hidden = screenX < -20 || screenX > size.Width+20 || screenY < -20 || screenY > size.Height+20
 		objects = append(objects, pin)
+	}
+
+	// pending point — where the user right-clicked to add a new incident,
+	// kept visible (a distinct color + halo ring) until that dialog closes.
+	if hasPending {
+		if r.pendingMark == nil {
+			r.pendingMark = canvas.NewCircle(colSuccess)
+			r.pendingMark.StrokeColor = colForeground
+			r.pendingMark.StrokeWidth = 1.5
+		}
+		if r.pendingHalo == nil {
+			r.pendingHalo = canvas.NewCircle(color.Transparent)
+			r.pendingHalo.StrokeColor = colSuccess
+			r.pendingHalo.StrokeWidth = 2
+		}
+		tx, ty := geo.LonLatToTile(pendingLon, pendingLat, zoom)
+		screenX := (float32(tx)-float32(cx))*tilePx + size.Width/2
+		screenY := (float32(ty)-float32(cy))*tilePx + size.Height/2
+
+		const haloR = 13
+		r.pendingHalo.Resize(fyne.NewSize(haloR*2, haloR*2))
+		r.pendingHalo.Move(fyne.NewPos(screenX-haloR, screenY-haloR))
+		objects = append(objects, r.pendingHalo)
+
+		const pendR = 8
+		r.pendingMark.Resize(fyne.NewSize(pendR*2, pendR*2))
+		r.pendingMark.Move(fyne.NewPos(screenX-pendR, screenY-pendR))
+		objects = append(objects, r.pendingMark)
 	}
 
 	// attribution (required by OpenStreetMap / ODbL)

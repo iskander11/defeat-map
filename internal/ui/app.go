@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"image/color"
 	"path/filepath"
 	"strings"
 	"time"
@@ -109,56 +108,57 @@ func (a *App) ensureCrimeaRegion() {
 // ---- layout ----
 
 func (a *App) Content() fyne.CanvasObject {
-	sidebar := a.buildSidebar()
+	left := a.buildLeftPanel()
+	right := a.buildIncidentPanel()
 	top := a.buildTopBar()
 
-	mapArea := container.NewStack(a.mapWidget, a.buildZoomOverlay(), a.buildCoordOverlay(), a.buildProviderOverlay())
+	mapArea := container.NewStack(a.mapWidget, a.buildMapControlsOverlay())
 
-	split := container.NewHSplit(sidebar, mapArea)
-	split.Offset = 0.26
+	centerRight := container.NewHSplit(mapArea, right)
+	centerRight.Offset = 0.7
+	full := container.NewHSplit(left, centerRight)
+	full.Offset = 0.22
 
-	return container.NewBorder(top, nil, nil, nil, split)
+	return container.NewBorder(top, nil, nil, nil, full)
 }
 
-// buildZoomOverlay is a small floating +/- / current-zoom control pinned to
-// the top-left corner of the map (just off the sidebar divider), as an
-// independent widget layered on top via container.NewStack — kept separate
-// from the map's own renderer so it is never affected by how many
+// buildMapControlsOverlay is a single compact card pinned to the top-left
+// corner of the map — zoom, map source and the live coordinate readout —
+// as an independent widget layered on top via container.NewStack, kept
+// separate from the map's own renderer so it is never affected by how many
 // tiles/markers the map is drawing.
-func (a *App) buildZoomOverlay() fyne.CanvasObject {
+func (a *App) buildMapControlsOverlay() fyne.CanvasObject {
 	a.zoomLabel = widget.NewLabelWithStyle(fmt.Sprint(a.mapWidget.Zoom()), fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-
-	zoomInBtn := widget.NewButton("+", a.mapWidget.ZoomIn)
 	zoomOutBtn := widget.NewButton("−", a.mapWidget.ZoomOut)
+	zoomInBtn := widget.NewButton("+", a.mapWidget.ZoomIn)
+	zoomRow := container.NewGridWithColumns(3, zoomOutBtn, a.zoomLabel, zoomInBtn)
 
-	cluster := container.NewVBox(zoomInBtn, a.zoomLabel, zoomOutBtn)
+	names := make([]string, len(maptiles.TileSources))
+	for i, s := range maptiles.TileSources {
+		names[i] = s.Name
+	}
+	a.providerSelect = widget.NewSelect(names, a.onProviderSelected)
+	a.providerSelect.SetSelected(maptiles.TileSources[0].Name)
+
+	a.coordLabel = widget.NewLabel("Наведите курсор на карту")
+	a.coordLabel.Wrapping = fyne.TextWrapOff
+
+	cluster := container.NewVBox(
+		zoomRow,
+		widget.NewSeparator(),
+		a.providerSelect,
+		widget.NewSeparator(),
+		a.coordLabel,
+	)
 	card := container.NewStack(
 		canvas.NewRectangle(colOverlayBg),
 		container.NewPadded(cluster),
 	)
-	fixedCard := container.New(layout.NewGridWrapLayout(fyne.NewSize(56, 140)), card)
+	fixedCard := container.New(layout.NewGridWrapLayout(fyne.NewSize(230, 190)), card)
 
 	// A trailing spacer keeps the fixed-size card pinned to the top of the
 	// map instead of being stretched to fill the full height by the Stack.
 	return container.NewVBox(container.NewPadded(fixedCard), layout.NewSpacer())
-}
-
-// buildCoordOverlay shows the coordinates under the cursor (updated on
-// hover) just below the zoom cluster, in a few common formats. It is blank
-// until the mouse first moves over the map.
-func (a *App) buildCoordOverlay() fyne.CanvasObject {
-	a.coordLabel = widget.NewLabel("")
-	a.coordLabel.Wrapping = fyne.TextWrapOff
-
-	card := container.NewStack(
-		canvas.NewRectangle(colOverlayBg),
-		container.NewPadded(a.coordLabel),
-	)
-
-	topOffset := canvas.NewRectangle(color.Transparent)
-	topOffset.SetMinSize(fyne.NewSize(0, 160))
-
-	return container.NewVBox(topOffset, container.NewPadded(card), layout.NewSpacer())
 }
 
 func (a *App) onHover(lat, lon float64) {
@@ -172,35 +172,8 @@ func (a *App) onHover(lat, lon float64) {
 
 func (a *App) onHoverEnd() {
 	if a.coordLabel != nil {
-		a.coordLabel.SetText("")
+		a.coordLabel.SetText("Наведите курсор на карту")
 	}
-}
-
-// buildProviderOverlay is the map-source picker, stacked below the
-// coordinate readout using the same top-left-pinned fixed-size card
-// pattern as the zoom cluster (Border's edge slots do not reliably keep
-// content on-screen once the row grows past a certain width, so this
-// avoids that layout entirely).
-func (a *App) buildProviderOverlay() fyne.CanvasObject {
-	names := make([]string, len(maptiles.TileSources))
-	for i, s := range maptiles.TileSources {
-		names[i] = s.Name
-	}
-	a.providerSelect = widget.NewSelect(names, a.onProviderSelected)
-	a.providerSelect.SetSelected(maptiles.TileSources[0].Name)
-
-	label := widget.NewLabelWithStyle("Карта", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	cluster := container.NewVBox(label, a.providerSelect)
-	card := container.NewStack(
-		canvas.NewRectangle(colOverlayBg),
-		container.NewPadded(cluster),
-	)
-	fixedCard := container.New(layout.NewGridWrapLayout(fyne.NewSize(190, 74)), card)
-
-	topOffset := canvas.NewRectangle(color.Transparent)
-	topOffset.SetMinSize(fyne.NewSize(0, 260))
-
-	return container.NewVBox(topOffset, container.NewPadded(fixedCard), layout.NewSpacer())
 }
 
 func (a *App) buildTopBar() fyne.CanvasObject {
@@ -211,10 +184,17 @@ func (a *App) buildTopBar() fyne.CanvasObject {
 	return container.NewBorder(nil, widget.NewSeparator(), nil, nil, container.NewPadded(titleBox))
 }
 
-func (a *App) buildSidebar() fyne.CanvasObject {
+// buildLeftPanel holds city search/selection and the calendar — the two
+// ways to navigate to a place or a time period.
+func (a *App) buildLeftPanel() fyne.CanvasObject {
 	a.searchEntry = widget.NewEntry()
 	a.searchEntry.SetPlaceHolder("Поиск по городу...")
 	a.searchEntry.OnChanged = a.onSearchChanged
+	clearBtn := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() {
+		a.searchEntry.SetText("")
+		a.onSearchChanged("")
+	})
+	a.searchEntry.ActionItem = clearBtn
 
 	a.cityList = widget.NewList(
 		func() int { return len(a.filteredCities) },
@@ -229,25 +209,13 @@ func (a *App) buildSidebar() fyne.CanvasObject {
 		c := a.filteredCities[i]
 		a.mapWidget.SetView(c.Lat, c.Lon, 14)
 		a.clearRange()
-		a.searchEntry.SetText(c.Name)
 		a.refreshIncidentList()
 	}
 
-	a.incidentList = widget.NewList(
-		func() int { return len(a.filteredIncidents) },
-		func() fyne.CanvasObject { return newIncidentRow() },
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			bindIncidentRow(o, a.filteredIncidents[i])
-		},
-	)
-	a.incidentList.OnSelected = func(i widget.ListItemID) {
-		a.jumpToIncident(a.filteredIncidents[i])
-	}
-
-	listTab := container.NewBorder(
+	citiesTab := container.NewBorder(
 		container.NewVBox(a.searchEntry, widget.NewSeparator()),
 		nil, nil, nil,
-		container.NewHSplit(a.cityList, a.incidentList),
+		a.cityList,
 	)
 
 	a.periodLabel = widget.NewLabel("")
@@ -262,13 +230,37 @@ func (a *App) buildSidebar() fyne.CanvasObject {
 	)
 
 	a.tabs = container.NewAppTabs(
-		container.NewTabItemWithIcon("Список", theme.ListIcon(), listTab),
+		container.NewTabItemWithIcon("Города", theme.ListIcon(), citiesTab),
 		container.NewTabItemWithIcon("Календарь", theme.HistoryIcon(), calTab),
 	)
 
 	a.refreshCities()
-	a.refreshIncidentList()
 	return a.tabs
+}
+
+// buildIncidentPanel is its own column on the right, listing incidents that
+// match the current city/text search and calendar period.
+func (a *App) buildIncidentPanel() fyne.CanvasObject {
+	header := widget.NewLabelWithStyle("Происшествия", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+
+	a.incidentList = widget.NewList(
+		func() int { return len(a.filteredIncidents) },
+		func() fyne.CanvasObject { return newIncidentRow() },
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			bindIncidentRow(o, a.filteredIncidents[i])
+		},
+	)
+	a.incidentList.OnSelected = func(i widget.ListItemID) {
+		a.jumpToIncident(a.filteredIncidents[i])
+	}
+
+	content := container.NewBorder(
+		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
+		nil, nil, nil,
+		a.incidentList,
+	)
+	a.refreshIncidentList()
+	return content
 }
 
 // ---- data refresh ----
@@ -287,15 +279,14 @@ func (a *App) refreshCities() {
 	}
 }
 
+// refreshIncidentList shows incidents for the calendar's selected period
+// (or all of them, if no period is selected) — independent of the city
+// search box, which only searches the city list.
 func (a *App) refreshIncidentList() {
-	q := strings.ToLower(strings.TrimSpace(a.searchEntry.Text))
 	all := a.st.IncidentsByRegion(a.currentRegion.ID)
 	a.filteredIncidents = a.filteredIncidents[:0]
 	for _, in := range all {
 		if !a.inSelectedRange(in.Date) {
-			continue
-		}
-		if q != "" && !strings.Contains(strings.ToLower(in.City), q) && !strings.Contains(strings.ToLower(in.ObjectName), q) {
 			continue
 		}
 		a.filteredIncidents = append(a.filteredIncidents, in)
@@ -350,7 +341,6 @@ func (a *App) refreshCalendarCounts() {
 
 func (a *App) onSearchChanged(string) {
 	a.refreshCities()
-	a.refreshIncidentList()
 }
 
 // onRangeSelected is called by the calendar whenever the user picks a day

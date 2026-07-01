@@ -42,7 +42,7 @@ func main() {
 	// mis-detect monitor bounds (picks the wrong/a stale monitor) right
 	// after a window is created, which would push a larger window's edge
 	// off-screen. This size stays fully on-screen even if that happens.
-	win.Resize(fyne.NewSize(1150, 715))
+	win.Resize(fyne.NewSize(1000, 650))
 	win.SetMaster()
 	win.CenterOnScreen()
 

@@ -171,6 +171,12 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 
 	content := container.NewVBox(sizer, form, errLabel, buttons)
 	d = dialog.NewCustomWithoutButtons(title, content, a.win)
+	if isNew {
+		// Keep the clicked point visibly marked on the map while this
+		// dialog is open, whether it ends up saved or cancelled.
+		a.mapWidget.SetPendingPoint(in.Lat, in.Lon)
+		d.SetOnClosed(a.mapWidget.ClearPendingPoint)
+	}
 	d.Show()
 }
 
