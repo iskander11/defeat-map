@@ -1,4 +1,5 @@
 /dist/
+/dist-installer/
 *.exe
 *.tmp
 access_token_github.txt

@@ -4,6 +4,7 @@
 package main
 
 import (
+	_ "embed"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 	"defeatmap/internal/store"
 	"defeatmap/internal/ui"
 )
+
+//go:embed icon.png
+var iconPNG []byte
 
 func main() {
 	dataDir, err := store.AppDataDir()
@@ -29,7 +33,11 @@ func main() {
 	a := fyneapp.NewWithID("com.iskander11.defeatmap")
 	a.Settings().SetTheme(ui.NewTheme())
 
+	icon := fyne.NewStaticResource("icon.png", iconPNG)
+	a.SetIcon(icon)
+
 	win := a.NewWindow("Карта поражений — Крым")
+	win.SetIcon(icon)
 	win.Resize(fyne.NewSize(1320, 860))
 	win.SetMaster()
 	win.CenterOnScreen()
