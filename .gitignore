@@ -1,0 +1,4 @@
+/dist/
+*.exe
+*.tmp
+access_token_github.txt
