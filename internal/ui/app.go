@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -370,6 +371,7 @@ func (a *App) onMapContextMenu(absPos fyne.Position, lat, lon float64) {
 		fyne.NewMenuItem("Добавить происшествие", func() {
 			a.openIncidentDialog(&store.Incident{
 				RegionID: a.currentRegion.ID,
+				City:     a.nearestCityName(lat, lon),
 				Lat:      lat,
 				Lon:      lon,
 				Date:     time.Now().Format("2006-01-02"),
@@ -377,6 +379,23 @@ func (a *App) onMapContextMenu(absPos fyne.Position, lat, lon float64) {
 		}),
 	)
 	widget.ShowPopUpMenuAtPosition(menu, a.win.Canvas(), absPos)
+}
+
+// nearestCityName returns the name of the region's known city/settlement
+// closest to (lat, lon), so a fresh incident starts with a sensible
+// pre-filled city instead of an empty field. Returns "" if the region has
+// no cities yet.
+func (a *App) nearestCityName(lat, lon float64) string {
+	cities := a.st.CitiesByRegion(a.currentRegion.ID)
+	best := ""
+	bestDist := math.MaxFloat64
+	for _, c := range cities {
+		if d := geo.DistanceKm(lat, lon, c.Lat, c.Lon); d < bestDist {
+			bestDist = d
+			best = c.Name
+		}
+	}
+	return best
 }
 
 func (a *App) onMarkerTap(id string) {

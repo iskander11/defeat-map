@@ -11,11 +11,42 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"defeatmap/internal/geo"
 	"defeatmap/internal/store"
 )
+
+// ---- date formatting: incidents are stored as "YYYY-MM-DD" but shown to
+// the user as "ДД.ММ.ГГГГ" everywhere in the UI ----
+
+var dateInputLayouts = []string{"02.01.2006", "2.1.2006"}
+
+// formatDisplayDate converts a stored "YYYY-MM-DD" date to "ДД.ММ.ГГГГ" for
+// display. Unparseable input is returned unchanged.
+func formatDisplayDate(iso string) string {
+	t, err := time.Parse("2006-01-02", iso)
+	if err != nil {
+		return iso
+	}
+	return t.Format("02.01.2006")
+}
+
+// parseDisplayDate converts a user-entered "ДД.ММ.ГГГГ" (or "Д.М.ГГГГ")
+// date into the stored "YYYY-MM-DD" form.
+func parseDisplayDate(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	var lastErr error
+	for _, layout := range dateInputLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.Format("2006-01-02"), nil
+		} else {
+			lastErr = err
+		}
+	}
+	return "", lastErr
+}
 
 // ---- incident list row ----
 
@@ -23,6 +54,7 @@ type incidentRowRefs struct {
 	date *widget.Label
 	city *widget.Label
 	obj  *widget.Label
+	desc *widget.Label
 }
 
 func newIncidentRow() fyne.CanvasObject {
@@ -30,10 +62,14 @@ func newIncidentRow() fyne.CanvasObject {
 	city := widget.NewLabel("")
 	obj := widget.NewLabel("")
 	obj.Wrapping = fyne.TextTruncate
-	refs := &incidentRowRefs{date: date, city: city, obj: obj}
+	desc := widget.NewLabel("")
+	desc.Wrapping = fyne.TextWrapWord
+	desc.TextStyle = fyne.TextStyle{Italic: true}
+	refs := &incidentRowRefs{date: date, city: city, obj: obj, desc: desc}
 	row := container.NewVBox(
 		container.NewHBox(date, city),
 		obj,
+		desc,
 		widget.NewSeparator(),
 	)
 	setRowRefs(row, refs)
@@ -50,9 +86,10 @@ func bindIncidentRow(o fyne.CanvasObject, in store.Incident) {
 	if !ok {
 		return
 	}
-	r.date.SetText(in.Date)
+	r.date.SetText(formatDisplayDate(in.Date))
 	r.city.SetText(in.City)
 	r.obj.SetText(in.ObjectName)
+	r.desc.SetText(in.Description)
 }
 
 // ---- incident add/edit dialog ----
@@ -76,8 +113,15 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 	if in.Date == "" {
 		in.Date = time.Now().Format("2006-01-02")
 	}
-	dateEntry.SetText(in.Date)
-	dateEntry.PlaceHolder = "ГГГГ-ММ-ДД"
+	dateEntry.SetText(formatDisplayDate(in.Date))
+	dateEntry.PlaceHolder = "ДД.ММ.ГГГГ"
+
+	dateCalBtn := widget.NewButtonWithIcon("", theme.CalendarIcon(), func() {
+		a.showDatePicker(dateEntry.Text, func(iso string) {
+			dateEntry.SetText(formatDisplayDate(iso))
+		})
+	})
+	dateRow := container.NewBorder(nil, nil, nil, dateCalBtn, dateEntry)
 
 	descEntry := widget.NewMultiLineEntry()
 	descEntry.SetText(in.Description)
@@ -92,7 +136,7 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 	form := widget.NewForm(
 		widget.NewFormItem("Город", cityEntry),
 		widget.NewFormItem("Объект", objEntry),
-		widget.NewFormItem("Дата", dateEntry),
+		widget.NewFormItem("Дата", dateRow),
 		widget.NewFormItem("Доп. информация", descEntry),
 		widget.NewFormItem("Координаты", coordLabel),
 	)
@@ -108,8 +152,9 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 	errLabel.TextSize = 11
 
 	save := widget.NewButtonWithIcon("Сохранить", nil, func() {
-		if _, err := time.Parse("2006-01-02", dateEntry.Text); err != nil {
-			errLabel.Text = "Дата должна быть в формате ГГГГ-ММ-ДД"
+		isoDate, err := parseDisplayDate(dateEntry.Text)
+		if err != nil {
+			errLabel.Text = "Дата должна быть в формате ДД.ММ.ГГГГ"
 			errLabel.Refresh()
 			return
 		}
@@ -120,7 +165,7 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 		}
 		in.City = cityEntry.Text
 		in.ObjectName = objEntry.Text
-		in.Date = dateEntry.Text
+		in.Date = isoDate
 		in.Description = descEntry.Text
 		in.RegionID = a.currentRegion.ID
 
@@ -130,15 +175,15 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 			return
 		}
 
-		var err error
+		var saveErr error
 		if isNew {
 			in.CreatedAt = time.Now().UTC()
-			err = a.st.AddIncident(*in)
+			saveErr = a.st.AddIncident(*in)
 		} else {
-			err = a.st.UpdateIncident(*in)
+			saveErr = a.st.UpdateIncident(*in)
 		}
-		if err != nil {
-			errLabel.Text = err.Error()
+		if saveErr != nil {
+			errLabel.Text = saveErr.Error()
 			errLabel.Refresh()
 			return
 		}
@@ -180,6 +225,33 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 	d.Show()
 }
 
+// showDatePicker opens a small calendar popup for picking a single date, as
+// an alternative to typing it in by hand. current is the date currently
+// shown in the entry (ДД.ММ.ГГГГ, may be invalid/empty) and is used only to
+// preset which month the calendar opens on. onPick receives the chosen date
+// in stored "YYYY-MM-DD" form.
+func (a *App) showDatePicker(current string, onPick func(iso string)) {
+	cal := NewCalendarWidget()
+	if iso, err := parseDisplayDate(current); err == nil {
+		if t, err := time.Parse("2006-01-02", iso); err == nil {
+			cal.year, cal.month = t.Year(), int(t.Month())
+			cal.refreshGrid()
+		}
+	}
+
+	var d dialog.Dialog
+	cal.OnRangeSelected = func(start, end string) {
+		onPick(start)
+		d.Hide()
+	}
+
+	sizer := canvas.NewRectangle(color.Transparent)
+	sizer.SetMinSize(fyne.NewSize(280, 0))
+	content := container.NewVBox(sizer, cal)
+	d = dialog.NewCustomWithoutButtons("Выбор даты", content, a.win)
+	d.Show()
+}
+
 // ---- report dialog ----
 
 // showReportDialog compiles a report of incidents within [start, end]
@@ -197,9 +269,9 @@ func (a *App) showReportDialog(start, end string) {
 
 	period := "за всё время"
 	if start != "" && start == end {
-		period = "за " + start
+		period = "за " + formatDisplayDate(start)
 	} else if start != "" {
-		period = fmt.Sprintf("с %s по %s", start, end)
+		period = fmt.Sprintf("с %s по %s", formatDisplayDate(start), formatDisplayDate(end))
 	}
 
 	header := widget.NewLabelWithStyle(

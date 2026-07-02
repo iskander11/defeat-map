@@ -23,6 +23,18 @@ func TileToLonLat(x, y float64, zoom int) (lon, lat float64) {
 	return
 }
 
+// DistanceKm returns the great-circle distance between two WGS84 points in
+// kilometres (haversine formula).
+func DistanceKm(lat1, lon1, lat2, lon2 float64) float64 {
+	const earthRadiusKm = 6371.0
+	rad := math.Pi / 180
+	dLat := (lat2 - lat1) * rad
+	dLon := (lon2 - lon1) * rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return earthRadiusKm * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
 // BBox is a geographic bounding box.
 type BBox struct {
 	MinLat, MaxLat, MinLon, MaxLon float64
