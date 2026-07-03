@@ -11,6 +11,8 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -48,48 +50,292 @@ func parseDisplayDate(s string) (string, error) {
 	return "", lastErr
 }
 
-// ---- incident list row ----
+// descriptionRowWidth is the assumed available width for the incident list
+// row's description line, used only to decide where to truncate it (see
+// fitTextToLines). The sidebar is resizable (its default is the right-hand
+// ~21% of the 1000px default window from the HSplit ratios in Content()),
+// so this can't track the *actual* current width without a layout pass;
+// it's deliberately picked on the narrow side so the 2-line cap holds even
+// if the panel ends up narrower than the default.
+const descriptionRowWidth float32 = 180
 
-type incidentRowRefs struct {
-	date *widget.Label
-	city *widget.Label
-	obj  *widget.Label
-	desc *widget.Label
-}
+// fitTextToLines returns text unchanged if it wraps to at most maxLines
+// lines at the given width/text size, otherwise the longest prefix (in
+// runes) that does, with "…" appended — an exact, rendered-text-based cap
+// (see mapRenderer's two-pass resize/measure for why this can't just be a
+// single MinSize() call), unlike guessing a character count, which doesn't
+// hold up across different column widths.
+func fitTextToLines(width float32, text string, maxLines int, sizeName fyne.ThemeSizeName) string {
+	probe := widget.NewLabel("")
+	probe.SizeName = sizeName
+	probe.Wrapping = fyne.TextWrapWord
+	probe.Resize(fyne.NewSize(width, 2000))
 
-func newIncidentRow() fyne.CanvasObject {
-	date := widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	city := widget.NewLabel("")
-	obj := widget.NewLabel("")
-	obj.Wrapping = fyne.TextTruncate
-	desc := widget.NewLabel("")
-	desc.Wrapping = fyne.TextWrapWord
-	desc.TextStyle = fyne.TextStyle{Italic: true}
-	refs := &incidentRowRefs{date: date, city: city, obj: obj, desc: desc}
-	row := container.NewVBox(
-		container.NewHBox(date, city),
-		obj,
-		desc,
-		widget.NewSeparator(),
-	)
-	setRowRefs(row, refs)
-	return row
-}
-
-// a tiny side-table to attach struct refs to a container without abusing Fyne's object model
-var rowRefTable = map[fyne.CanvasObject]*incidentRowRefs{}
-
-func setRowRefs(o fyne.CanvasObject, r *incidentRowRefs) { rowRefTable[o] = r }
-
-func bindIncidentRow(o fyne.CanvasObject, in store.Incident) {
-	r, ok := rowRefTable[o]
-	if !ok {
-		return
+	measure := func(s string) float32 {
+		probe.SetText(s)
+		return probe.MinSize().Height
 	}
-	r.date.SetText(formatDisplayDate(in.Date))
-	r.city.SetText(in.City)
-	r.obj.SetText(in.ObjectName)
-	r.desc.SetText(in.Description)
+	// Calibrate from the *difference* between one and two lines rather
+	// than just multiplying a single line's height by maxLines: a wrapped
+	// text block has some fixed overhead (padding etc.) on top of its
+	// per-line height, so height(1 line) * N overstates height(N lines) —
+	// which in practice let one extra line sneak in under the cap.
+	h1 := measure("Ag")
+	h2 := measure("Ag\nAg")
+	lineHeight := h2 - h1
+	maxH := h1 + lineHeight*float32(maxLines-1) + lineHeight*0.05
+
+	if measure(text) <= maxH {
+		return text
+	}
+	runes := []rune(text)
+	lo, hi := 0, len(runes)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if measure(string(runes[:mid])+"…") <= maxH {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if lo == 0 {
+		return "…"
+	}
+	return string(runes[:lo]) + "…"
+}
+
+// ---- incident list row ----
+//
+// Rows are deliberately ultra-compact and built fresh per incident (no
+// pooling/rebinding): date/city/object share a single line (with a small
+// color dot for the incident's accent color), and the description line is
+// only added AT ALL when there is one — so an incident with no "доп.
+// информация" genuinely takes up less vertical space, not just a
+// blank-but-reserved line. This only works because the list itself is a
+// plain VBox+VScroll (see buildIncidentPanel/showReportDialog) rather than
+// widget.List, which forces every row to the same fixed height.
+func newIncidentRow(in store.Incident) fyne.CanvasObject {
+	dot := canvas.NewRectangle(parseHexColor(in.Color))
+	dot.CornerRadius = 3
+	dot.SetMinSize(fyne.NewSize(8, 8))
+
+	date := widget.NewLabelWithStyle(formatDisplayDate(in.Date), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	date.SizeName = theme.SizeNameCaptionText
+	city := widget.NewLabel(in.City)
+	city.SizeName = theme.SizeNameCaptionText
+	obj := widget.NewLabel(in.ObjectName)
+	obj.SizeName = theme.SizeNameCaptionText
+	obj.Truncation = fyne.TextTruncateEllipsis
+
+	line1 := container.New(layout.NewCustomPaddedHBoxLayout(4),
+		container.NewCenter(dot), date, city, obj)
+
+	items := []fyne.CanvasObject{line1}
+	if in.Description != "" {
+		fitted := fitTextToLines(descriptionRowWidth, in.Description, 2, theme.SizeNameCaptionText)
+		desc := widget.NewLabel(fitted)
+		desc.SizeName = theme.SizeNameCaptionText
+		desc.Wrapping = fyne.TextWrapWord
+		desc.TextStyle = fyne.TextStyle{Italic: true}
+		items = append(items, desc)
+	}
+	return container.New(layout.NewCustomPaddedVBoxLayout(0), items...)
+}
+
+// doubleClickWindow is the max gap between two taps on the same incident
+// row that counts as a double-click (see tappableRow).
+// tappableRow wraps arbitrary content (an incident row) with click/
+// double-click handling, since a plain *fyne.Container isn't tappable and
+// the incident lists are now hand-built VBoxes rather than widget.List (see
+// newIncidentRow). A single click calls onTapped (center the map on the
+// incident); a double-click calls onDouble instead (open it for editing).
+// Implementing fyne.DoubleTappable makes Fyne's own driver do the
+// single-vs-double-click disambiguation (a fixed delay before Tapped fires,
+// to see if a second click follows) — a hand-rolled timer comparing
+// consecutive Tapped calls does not reliably see a real double-click,
+// since some drivers deliver it as one OS-level double-click message
+// rather than two separate taps.
+type tappableRow struct {
+	widget.BaseWidget
+	content  fyne.CanvasObject
+	onTapped func()
+	onDouble func()
+}
+
+func newTappableRow(content fyne.CanvasObject, onTapped, onDouble func()) *tappableRow {
+	t := &tappableRow{content: content, onTapped: onTapped, onDouble: onDouble}
+	t.ExtendBaseWidget(t)
+	return t
+}
+
+func (t *tappableRow) Tapped(*fyne.PointEvent) {
+	if t.onTapped != nil {
+		t.onTapped()
+	}
+}
+
+func (t *tappableRow) DoubleTapped(*fyne.PointEvent) {
+	if t.onDouble != nil {
+		t.onDouble()
+	}
+}
+
+func (t *tappableRow) Cursor() desktop.Cursor { return desktop.PointerCursor }
+
+func (t *tappableRow) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(t.content)
+}
+
+// ---- color swatch picker ----
+
+// colorSwatch is a small tappable square used to pick one of the preset
+// incident colors (see incidentColors in theme.go). Selected swatches get a
+// highlighted ring.
+type colorSwatch struct {
+	widget.BaseWidget
+	col      color.Color
+	selected bool
+	onTap    func()
+}
+
+func newColorSwatch(col color.Color, onTap func()) *colorSwatch {
+	s := &colorSwatch{col: col, onTap: onTap}
+	s.ExtendBaseWidget(s)
+	return s
+}
+
+func (s *colorSwatch) Tapped(*fyne.PointEvent) {
+	if s.onTap != nil {
+		s.onTap()
+	}
+}
+
+func (s *colorSwatch) Cursor() desktop.Cursor { return desktop.PointerCursor }
+
+func (s *colorSwatch) CreateRenderer() fyne.WidgetRenderer {
+	rect := canvas.NewRectangle(s.col)
+	rect.CornerRadius = 5
+	ring := canvas.NewRectangle(color.Transparent)
+	ring.StrokeWidth = 2
+	ring.CornerRadius = 5
+	return &colorSwatchRenderer{swatch: s, rect: rect, ring: ring}
+}
+
+type colorSwatchRenderer struct {
+	swatch     *colorSwatch
+	rect, ring *canvas.Rectangle
+}
+
+func (r *colorSwatchRenderer) Layout(size fyne.Size) {
+	r.rect.Resize(size)
+	r.ring.Resize(size)
+}
+func (r *colorSwatchRenderer) MinSize() fyne.Size { return fyne.NewSize(24, 24) }
+func (r *colorSwatchRenderer) Refresh() {
+	r.rect.FillColor = r.swatch.col
+	if r.swatch.selected {
+		r.ring.StrokeColor = colForeground
+	} else {
+		r.ring.StrokeColor = color.Transparent
+	}
+	r.rect.Refresh()
+	r.ring.Refresh()
+}
+func (r *colorSwatchRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.rect, r.ring}
+}
+func (r *colorSwatchRenderer) Destroy() {}
+
+// newColorPicker builds a row of preset color swatches; selected starts as
+// the incident's current color (or the first preset if unset), and picked
+// is called with the newly chosen hex whenever the user taps a different
+// swatch. Returns the row plus a getter for the current selection.
+func newColorPicker(initial string) (row fyne.CanvasObject, getSelected func() string) {
+	selected := initial
+	if selected == "" {
+		selected = incidentColors[0]
+	}
+	swatches := make([]*colorSwatch, len(incidentColors))
+	objs := make([]fyne.CanvasObject, len(incidentColors))
+	refreshAll := func() {
+		for i, hex := range incidentColors {
+			swatches[i].selected = hex == selected
+			swatches[i].Refresh()
+		}
+	}
+	for i, hex := range incidentColors {
+		hex := hex
+		sw := newColorSwatch(parseHexColor(hex), func() {
+			selected = hex
+			refreshAll()
+		})
+		swatches[i] = sw
+		objs[i] = sw
+	}
+	refreshAll()
+	return container.New(layout.NewCustomPaddedHBoxLayout(6), objs...), func() string { return selected }
+}
+
+// ---- incident view (read-only) dialog ----
+
+// openIncidentViewDialog shows an incident's full details read-only — in
+// particular the complete, untruncated description (the map card and list
+// rows both cap it to a few lines for compactness) — with a
+// "Редактировать" button that opens the actual edit form
+// (openIncidentDialog). beforeEdit, if not nil, runs right before that
+// happens — e.g. so the report dialog can close itself only once the user
+// actually commits to editing, not just to look.
+func (a *App) openIncidentViewDialog(in store.Incident, beforeEdit func()) {
+	dot := canvas.NewRectangle(parseHexColor(in.Color))
+	dot.CornerRadius = 4
+	dot.SetMinSize(fyne.NewSize(14, 14))
+
+	dateLabel := widget.NewLabelWithStyle(formatDisplayDate(in.Date), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	cityLabel := widget.NewLabelWithStyle(in.City, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	header := container.New(layout.NewCustomPaddedHBoxLayout(6), container.NewCenter(dot), dateLabel, cityLabel)
+
+	objLabel := widget.NewLabel(in.ObjectName)
+	objLabel.Wrapping = fyne.TextWrapWord
+
+	descText := in.Description
+	if descText == "" {
+		descText = "—"
+	}
+	descLabel := widget.NewLabel(descText)
+	descLabel.Wrapping = fyne.TextWrapWord
+	if in.Description != "" {
+		descLabel.TextStyle = fyne.TextStyle{Italic: true}
+	}
+
+	coordText := fmt.Sprintf("%s  •  %s", geo.FormatDecimal(in.Lat, in.Lon), geo.FormatUTM(in.Lat, in.Lon))
+	coordLabel := widget.NewLabel(coordText)
+	coordLabel.Wrapping = fyne.TextWrapOff
+
+	form := widget.NewForm(
+		widget.NewFormItem("Объект", objLabel),
+		widget.NewFormItem("Доп. информация", descLabel),
+		widget.NewFormItem("Координаты", coordLabel),
+	)
+
+	var d dialog.Dialog
+
+	closeBtn := widget.NewButton("Закрыть", func() { d.Hide() })
+	editBtn := widget.NewButtonWithIcon("Редактировать", theme.DocumentCreateIcon(), func() {
+		d.Hide()
+		if beforeEdit != nil {
+			beforeEdit()
+		}
+		a.openIncidentDialog(&in)
+	})
+	editBtn.Importance = widget.HighImportance
+	buttons := container.NewHBox(closeBtn, editBtn)
+
+	sizer := canvas.NewRectangle(color.Transparent)
+	sizer.SetMinSize(fyne.NewSize(420, 0))
+
+	content := container.NewVBox(sizer, header, widget.NewSeparator(), form, buttons)
+	d = dialog.NewCustomWithoutButtons("Происшествие", content, a.win)
+	d.Show()
 }
 
 // ---- incident add/edit dialog ----
@@ -133,11 +379,14 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 	coordLabel := widget.NewLabel(coordText)
 	coordLabel.Wrapping = fyne.TextWrapOff
 
+	colorRow, getSelectedColor := newColorPicker(in.Color)
+
 	form := widget.NewForm(
 		widget.NewFormItem("Город", cityEntry),
 		widget.NewFormItem("Объект", objEntry),
 		widget.NewFormItem("Дата", dateRow),
 		widget.NewFormItem("Доп. информация", descEntry),
+		widget.NewFormItem("Цвет", colorRow),
 		widget.NewFormItem("Координаты", coordLabel),
 	)
 
@@ -167,6 +416,7 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 		in.ObjectName = objEntry.Text
 		in.Date = isoDate
 		in.Description = descEntry.Text
+		in.Color = getSelectedColor()
 		in.RegionID = a.currentRegion.ID
 
 		if _, err := a.st.EnsureCity(a.currentRegion.ID, in.City, in.Lat, in.Lon); err != nil {
@@ -305,15 +555,15 @@ func (a *App) showReportDialog(start, end string) {
 
 	var d dialog.Dialog
 
-	reportList := widget.NewList(
-		func() int { return len(items) },
-		func() fyne.CanvasObject { return newIncidentRow() },
-		func(i widget.ListItemID, o fyne.CanvasObject) { bindIncidentRow(o, items[i]) },
-	)
-	reportList.OnSelected = func(i widget.ListItemID) {
-		d.Hide()
-		a.jumpToIncident(items[i])
+	rowsBox := container.NewVBox()
+	for _, in := range items {
+		in := in
+		rowsBox.Add(newTappableRow(newIncidentRow(in),
+			func() { a.mapWidget.SetView(in.Lat, in.Lon, 16) },
+			func() { a.openIncidentViewDialog(in, func() { d.Hide() }) },
+		))
 	}
+	reportList := container.NewVScroll(rowsBox)
 
 	listSizer := canvas.NewRectangle(color.Transparent)
 	listSizer.SetMinSize(fyne.NewSize(0, 340))

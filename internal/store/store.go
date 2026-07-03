@@ -16,6 +16,7 @@ type data struct {
 	Regions   []Region   `json:"regions"`
 	Cities    []City     `json:"cities"`
 	Incidents []Incident `json:"incidents"`
+	Layers    []Layer    `json:"layers,omitempty"`
 }
 
 // Store is a thread-safe, disk-backed store for the app's data.
@@ -176,12 +177,80 @@ func (s *Store) UpdateIncident(in Incident) error {
 	return fmt.Errorf("происшествие не найдено")
 }
 
+// SetIncidentCallout persists a pinned map callout card's position for an
+// incident (hasCallout=true) or clears it (false), independent of editing
+// the incident's other fields — called whenever the user drags a callout
+// into place or removes it, so it survives an app restart.
+func (s *Store) SetIncidentCallout(id string, hasCallout bool, dx, dy float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.d.Incidents {
+		if existing.ID == id {
+			s.d.Incidents[i].HasCallout = hasCallout
+			s.d.Incidents[i].CalloutDX = dx
+			s.d.Incidents[i].CalloutDY = dy
+			return s.save()
+		}
+	}
+	return nil
+}
+
 func (s *Store) DeleteIncident(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, existing := range s.d.Incidents {
 		if existing.ID == id {
 			s.d.Incidents = append(s.d.Incidents[:i], s.d.Incidents[i+1:]...)
+			return s.save()
+		}
+	}
+	return nil
+}
+
+// ---- Layers (imported KML/KMZ reference points) ----
+
+func (s *Store) LayersByRegion(regionID string) []Layer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []Layer
+	for _, l := range s.d.Layers {
+		if l.RegionID == regionID {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// AddLayer stores a newly-imported layer, assigning it an ID if it doesn't
+// have one yet.
+func (s *Store) AddLayer(l Layer) (Layer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l.ID == "" {
+		l.ID = newID()
+	}
+	s.d.Layers = append(s.d.Layers, l)
+	return l, s.save()
+}
+
+func (s *Store) SetLayerVisible(id string, visible bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.d.Layers {
+		if existing.ID == id {
+			s.d.Layers[i].Visible = visible
+			return s.save()
+		}
+	}
+	return fmt.Errorf("слой не найден")
+}
+
+func (s *Store) DeleteLayer(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.d.Layers {
+		if existing.ID == id {
+			s.d.Layers = append(s.d.Layers[:i], s.d.Layers[i+1:]...)
 			return s.save()
 		}
 	}

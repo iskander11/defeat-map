@@ -19,7 +19,6 @@ type TileSource struct {
 	ID      string // used as the on-disk cache folder name
 	Name    string // shown in the UI
 	URLTmpl string // %d,%d,%d -> z,x,y
-	Note    string // shown as a caveat in the UI, if any
 }
 
 // TileSources lists the map providers the user can pick between. Only
@@ -40,19 +39,16 @@ var TileSources = []TileSource{
 		ID:      "google",
 		Name:    "Google Карты",
 		URLTmpl: "https://mt1.google.com/vt/lyrs=m&x=%[2]d&y=%[3]d&z=%[1]d",
-		Note:    "Неофициальный доступ к тайлам Google (не по ToS/API) — может перестать работать без предупреждения",
 	},
 	{
 		ID:      "google-sat",
 		Name:    "Google Спутник",
 		URLTmpl: "https://mt1.google.com/vt/lyrs=s&x=%[2]d&y=%[3]d&z=%[1]d",
-		Note:    "Неофициальный доступ к тайлам Google (не по ToS/API) — может перестать работать без предупреждения",
 	},
 	{
 		ID:      "yandex",
 		Name:    "Яндекс Карты",
-		URLTmpl: "https://vec01.maps.yandex.net/tiles?l=map&v=24.06.15-0&x=%[2]d&y=%[3]d&z=%[1]d&scale=1&lang=ru_RU",
-		Note:    "Неофициальный доступ к тайлам Яндекса (не по ToS/API) — версия слоя может устареть, тогда тайлы перестанут грузиться",
+		URLTmpl: "https://core-renderer-tiles.maps.yandex.net/tiles?l=map&v=24.06.15-0&x=%[2]d&y=%[3]d&z=%[1]d&scale=1&lang=ru_RU",
 	},
 }
 

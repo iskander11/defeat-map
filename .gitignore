@@ -3,3 +3,12 @@
 *.exe
 *.tmp
 access_token_github.txt
+
+# Deeper zoom tiles (13+) — fetched on demand and cached locally per-user
+# instead of shipping in the repo; see internal/maptiles and cmd/tileseed.
+/assets/tiles/crimea/13/
+/assets/tiles/crimea/14/
+/assets/tiles/crimea/15/
+
+# Scratch notes/screenshots, not part of the app.
+/баги карта поражений/

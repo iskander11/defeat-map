@@ -10,7 +10,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -35,13 +34,14 @@ type App struct {
 	mapWidget      *MapWidget
 	calendarWidget *CalendarWidget
 
-	providerSelect *widget.Select
-	searchEntry    *widget.Entry
-	cityList       *widget.List
-	incidentList   *widget.List
-	periodLabel    *widget.Label
-	zoomLabel      *widget.Label
-	coordLabel     *widget.Label
+	providerSelect  *widget.Select
+	searchEntry     *widget.Entry
+	cityList        *widget.List
+	incidentListBox *fyne.Container
+	layersListBox   *fyne.Container
+	periodLabel     *widget.Label
+	zoomLabel       *widget.Label
+	coordLabel      *widget.Label
 
 	filteredCities       []store.City
 	filteredIncidents    []store.Incident
@@ -65,6 +65,10 @@ func NewApp(win fyne.Window, st *store.Store, bundleRootCrimea string) *App {
 	a.mapWidget.SetOnZoomChanged(a.onZoomChanged)
 	a.mapWidget.SetOnHover(a.onHover)
 	a.mapWidget.SetOnHoverEnd(a.onHoverEnd)
+	a.mapWidget.SetOnCalloutContextMenu(a.onCalloutContextMenu)
+	a.mapWidget.SetOnCalloutChanged(a.onCalloutChanged)
+	a.mapWidget.SetOnCalloutTap(a.onCalloutTap)
+	a.mapWidget.SetOnLayerPointTap(a.onLayerPointTap)
 
 	a.calendarWidget = NewCalendarWidget()
 	a.calendarWidget.OnRangeSelected = a.onRangeSelected
@@ -111,16 +115,15 @@ func (a *App) ensureCrimeaRegion() {
 func (a *App) Content() fyne.CanvasObject {
 	left := a.buildLeftPanel()
 	right := a.buildIncidentPanel()
-	top := a.buildTopBar()
 
 	mapArea := container.NewStack(a.mapWidget, a.buildMapControlsOverlay())
 
 	centerRight := container.NewHSplit(mapArea, right)
-	centerRight.Offset = 0.7
+	centerRight.Offset = 0.75
 	full := container.NewHSplit(left, centerRight)
-	full.Offset = 0.22
+	full.Offset = 0.15
 
-	return container.NewBorder(top, nil, nil, nil, full)
+	return full
 }
 
 // buildMapControlsOverlay is a single compact card pinned to the top-left
@@ -152,7 +155,7 @@ func (a *App) buildMapControlsOverlay() fyne.CanvasObject {
 		a.coordLabel,
 	)
 	card := container.NewStack(
-		canvas.NewRectangle(colOverlayBg),
+		canvas.NewRectangle(colMapOverlayBg),
 		container.NewPadded(cluster),
 	)
 	fixedCard := container.New(layout.NewGridWrapLayout(fyne.NewSize(230, 190)), card)
@@ -175,14 +178,6 @@ func (a *App) onHoverEnd() {
 	if a.coordLabel != nil {
 		a.coordLabel.SetText("Наведите курсор на карту")
 	}
-}
-
-func (a *App) buildTopBar() fyne.CanvasObject {
-	title := widget.NewLabelWithStyle("Карта поражений", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	hint := widget.NewLabelWithStyle("ПКМ по карте — добавить происшествие", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
-
-	titleBox := container.NewVBox(title, hint)
-	return container.NewBorder(nil, widget.NewSeparator(), nil, nil, container.NewPadded(titleBox))
 }
 
 // buildLeftPanel holds city search/selection and the calendar — the two
@@ -220,6 +215,12 @@ func (a *App) buildLeftPanel() fyne.CanvasObject {
 	)
 
 	a.periodLabel = widget.NewLabel("")
+	// Unwrapped, this label's longest text ("Период не выбран — отчёт по
+	// всем происшествиям") reports as one long line — since AppTabs sizes
+	// itself to the WIDEST of all its tabs' content (not just the visible
+	// one), that alone was enough to stop the whole left panel (including
+	// the Города tab) from shrinking below it.
+	a.periodLabel.Wrapping = fyne.TextWrapWord
 	a.updatePeriodLabel()
 	reportBtn := widget.NewButtonWithIcon("Составить отчёт", theme.DocumentIcon(), a.onBuildReport)
 	reportBtn.Importance = widget.HighImportance
@@ -230,9 +231,12 @@ func (a *App) buildLeftPanel() fyne.CanvasObject {
 		a.calendarWidget,
 	)
 
+	layersTab := a.buildLayersTab()
+
 	a.tabs = container.NewAppTabs(
 		container.NewTabItemWithIcon("Города", theme.ListIcon(), citiesTab),
 		container.NewTabItemWithIcon("Календарь", theme.HistoryIcon(), calTab),
+		container.NewTabItemWithIcon("Слои", theme.GridIcon(), layersTab),
 	)
 
 	a.refreshCities()
@@ -240,25 +244,21 @@ func (a *App) buildLeftPanel() fyne.CanvasObject {
 }
 
 // buildIncidentPanel is its own column on the right, listing incidents that
-// match the current city/text search and calendar period.
+// match the current city/text search and calendar period. It's a plain
+// VBox+VScroll (not widget.List) so each row can be its own natural,
+// variable height — an incident with no description genuinely takes less
+// space, rather than every row being padded out to a fixed size (see
+// newIncidentRow). A single click on a row centers the map on it; a
+// second, quick click on the same row opens it for editing (tappableRow).
 func (a *App) buildIncidentPanel() fyne.CanvasObject {
 	header := widget.NewLabelWithStyle("Происшествия", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 
-	a.incidentList = widget.NewList(
-		func() int { return len(a.filteredIncidents) },
-		func() fyne.CanvasObject { return newIncidentRow() },
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			bindIncidentRow(o, a.filteredIncidents[i])
-		},
-	)
-	a.incidentList.OnSelected = func(i widget.ListItemID) {
-		a.jumpToIncident(a.filteredIncidents[i])
-	}
+	a.incidentListBox = container.NewVBox()
 
 	content := container.NewBorder(
 		container.NewVBox(container.NewPadded(header), widget.NewSeparator()),
 		nil, nil, nil,
-		a.incidentList,
+		container.NewVScroll(a.incidentListBox),
 	)
 	a.refreshIncidentList()
 	return content
@@ -292,8 +292,15 @@ func (a *App) refreshIncidentList() {
 		}
 		a.filteredIncidents = append(a.filteredIncidents, in)
 	}
-	if a.incidentList != nil {
-		a.incidentList.Refresh()
+	if a.incidentListBox != nil {
+		a.incidentListBox.RemoveAll()
+		for _, in := range a.filteredIncidents {
+			in := in
+			a.incidentListBox.Add(newTappableRow(newIncidentRow(in),
+				func() { a.mapWidget.SetView(in.Lat, in.Lon, 16) },
+				func() { a.openIncidentViewDialog(in, nil) },
+			))
+		}
 	}
 	a.mapWidget.SetIncidents(all)
 	a.refreshCalendarCounts()
@@ -398,11 +405,41 @@ func (a *App) nearestCityName(lat, lon float64) string {
 	return best
 }
 
+// onCalloutContextMenu is called on right-click over a pinned callout card
+// (created by dragging off a marker — see MapWidget.MouseDown/Dragged): it
+// offers to remove that card and its leader line, leaving the underlying
+// incident untouched.
+func (a *App) onCalloutContextMenu(absPos fyne.Position, incidentID string) {
+	menu := fyne.NewMenu("",
+		fyne.NewMenuItem("Удалить", func() {
+			a.mapWidget.RemoveCallout(incidentID)
+		}),
+	)
+	widget.ShowPopUpMenuAtPosition(menu, a.win.Canvas(), absPos)
+}
+
+// onCalloutChanged persists a callout's placement (or removal) so it's
+// restored the next time the app starts (see store.SetIncidentCallout).
+func (a *App) onCalloutChanged(incidentID string, hasCallout bool, dx, dy float32) {
+	_ = a.st.SetIncidentCallout(incidentID, hasCallout, float64(dx), float64(dy))
+}
+
 func (a *App) onMarkerTap(id string) {
 	for _, in := range a.st.IncidentsByRegion(a.currentRegion.ID) {
 		if in.ID == id {
-			cp := in
-			a.openIncidentDialog(&cp)
+			a.openIncidentViewDialog(in, nil)
+			return
+		}
+	}
+}
+
+// onCalloutTap is called on double-click over a pinned callout card (see
+// MapWidget.SetOnCalloutTap) — like tapping a marker, it opens the
+// read-only view first rather than jumping straight to editing.
+func (a *App) onCalloutTap(incidentID string) {
+	for _, in := range a.st.IncidentsByRegion(a.currentRegion.ID) {
+		if in.ID == incidentID {
+			a.openIncidentViewDialog(in, nil)
 			return
 		}
 	}
@@ -423,18 +460,8 @@ func (a *App) onProviderSelected(name string) {
 			a.provider.SetBundleRoot("")
 		}
 		a.mapWidget.SetProvider(a.provider)
-		if s.Note != "" {
-			dialog.ShowInformation("Источник карты", s.Note, a.win)
-		}
 		return
 	}
-}
-
-// jumpToIncident centers the map on an incident's location at a comfortable
-// zoom level and opens it for viewing/editing.
-func (a *App) jumpToIncident(in store.Incident) {
-	a.mapWidget.SetView(in.Lat, in.Lon, 16)
-	a.openIncidentDialog(&in)
 }
 
 func (a *App) onBuildReport() {

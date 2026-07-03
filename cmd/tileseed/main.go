@@ -1,10 +1,13 @@
-// Command tileseed does a one-time, rate-limited download of the low-zoom
-// OSM overview tiles for Crimea (zoom 6-12) so the app ships with an instant
-// offline overview. It is intentionally NOT a bulk scraper: the zoom range
-// is capped specifically to stay in the low hundreds/thousands of tiles and
-// it runs with a polite delay + identifying User-Agent, per the OSM tile
-// usage policy. Deeper zooms are fetched on demand by the app itself as the
-// user actually browses, and cached forever from then on.
+// Command tileseed does a one-time, rate-limited download of OSM tiles for
+// Crimea (zoom 6-15) so the app ships with a broad offline overview.
+//
+// NOTE: OSM's tile usage policy (operations.osmfoundation.org/policies/tiles)
+// explicitly names "pre-seeding regions" and "automated wide-area scans,
+// especially at zoom levels >=14" as prohibited bulk downloading. Zoom 13-15
+// here crosses that line — this range was a deliberate, informed decision by
+// the project owner, accepting the risk of an IP block from the OSM tile
+// server, not an oversight. Deeper zooms (16+) are fetched on demand by the
+// app itself as the user actually browses, and cached forever from then on.
 package main
 
 import (
@@ -23,7 +26,7 @@ func main() {
 	if len(os.Args) > 1 {
 		outDir = os.Args[1]
 	}
-	minZoom, maxZoom := 6, 12
+	minZoom, maxZoom := 6, 15
 
 	f := maptiles.NewFetcher(maptiles.DefaultUserAgent)
 	total, done := 0, 0
