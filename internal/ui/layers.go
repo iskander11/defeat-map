@@ -56,11 +56,19 @@ func (a *App) refreshLayersList() {
 			nameLabel := widget.NewLabel(fmt.Sprintf("%s (%d)", l.Name, len(l.Points)))
 			nameLabel.Truncation = fyne.TextTruncateEllipsis
 
-			visCheck := widget.NewCheck("", func(checked bool) {
+			// Built with a nil callback and only wired up after SetChecked so
+			// that setting the initial state below doesn't itself trigger
+			// OnChanged — Check.SetChecked calls OnChanged whenever the value
+			// changes, including the very first time, which for a
+			// currently-visible layer would otherwise immediately call
+			// refreshLayersList from inside refreshLayersList, recursing
+			// forever and hanging the UI thread.
+			visCheck := widget.NewCheck("", nil)
+			visCheck.SetChecked(l.Visible)
+			visCheck.OnChanged = func(checked bool) {
 				_ = a.st.SetLayerVisible(l.ID, checked)
 				a.refreshLayersList()
-			})
-			visCheck.SetChecked(l.Visible)
+			}
 
 			delBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 				dialog.ShowConfirm("Удалить слой?",
