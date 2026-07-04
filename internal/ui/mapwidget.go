@@ -560,8 +560,17 @@ func newCalloutContent() (fyne.CanvasObject, *calloutRowRefs) {
 	desc.Truncation = fyne.TextTruncateEllipsis
 	desc.TextStyle = fyne.TextStyle{Italic: true}
 	refs := &calloutRowRefs{date: date, city: city, obj: obj, desc: desc}
+	// Border, not an HBox, for the header row: a truncatable Label reports
+	// its MinSize as just enough for one character plus "…" (Fyne's
+	// RichText does this deliberately, since by definition it can always
+	// shrink further) — an HBox sizes every child to exactly its own
+	// MinSize, so city would always be squeezed down to ~1 character
+	// regardless of how much room the card actually has. Border instead
+	// gives date its natural width and lets city fill (and only then
+	// truncate within) whatever space remains.
+	header := container.NewBorder(nil, nil, date, nil, city)
 	content := container.New(layout.NewCustomPaddedVBoxLayout(1),
-		container.New(layout.NewCustomPaddedHBoxLayout(4), date, city),
+		header,
 		obj,
 		desc,
 	)
