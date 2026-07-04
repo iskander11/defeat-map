@@ -20,6 +20,39 @@ import (
 	"defeatmap/internal/store"
 )
 
+// ---- dialog stack: lets Escape (wired in NewApp) close whichever custom
+// dialog is currently on top, since Fyne's dialogs have no built-in
+// Escape-to-dismiss ----
+
+// showDialog shows d and pushes it onto a.openDialogs so a single Escape
+// press (see NewApp) closes it. Use this instead of calling d.Show()
+// directly for every dialog.NewCustomWithoutButtons this package creates.
+func (a *App) showDialog(d dialog.Dialog) {
+	a.openDialogs = append(a.openDialogs, d)
+	d.SetOnClosed(func() { a.dialogClosed(d) })
+	d.Show()
+}
+
+// dialogClosed removes d from the open-dialog stack once it's hidden
+// (whether via its own Close/Save button, or via Escape).
+func (a *App) dialogClosed(d dialog.Dialog) {
+	for i, x := range a.openDialogs {
+		if x == d {
+			a.openDialogs = append(a.openDialogs[:i], a.openDialogs[i+1:]...)
+			return
+		}
+	}
+}
+
+// closeTopDialog hides the most-recently-opened dialog, if any — e.g. the
+// incident view opened from within the report closes first, revealing the
+// report again, rather than both closing at once.
+func (a *App) closeTopDialog() {
+	if n := len(a.openDialogs); n > 0 {
+		a.openDialogs[n-1].Hide()
+	}
+}
+
 // ---- date formatting: incidents are stored as "YYYY-MM-DD" but shown to
 // the user as "ДД.ММ.ГГГГ" everywhere in the UI ----
 
@@ -333,9 +366,22 @@ func (a *App) openIncidentViewDialog(in store.Incident, beforeEdit func()) {
 	sizer := canvas.NewRectangle(color.Transparent)
 	sizer.SetMinSize(fyne.NewSize(420, 0))
 
-	content := container.NewVBox(sizer, header, widget.NewSeparator(), form, buttons)
+	// The form (in particular the description) is wrapped in its own
+	// bounded, scrollable area instead of sitting directly in the VBox —
+	// otherwise a long description grows the dialog past the window's
+	// edge, with the Закрыть/Редактировать buttons pushed off-screen and
+	// no scrollbar to reach them (Escape, wired in NewApp, is the other
+	// way out, but shouldn't be the only one).
+	formScroll := container.NewVScroll(form)
+	formScroll.SetMinSize(fyne.NewSize(0, 320))
+
+	content := container.NewBorder(
+		container.NewVBox(sizer, header, widget.NewSeparator()),
+		buttons, nil, nil,
+		formScroll,
+	)
 	d = dialog.NewCustomWithoutButtons("Происшествие", content, a.win)
-	d.Show()
+	a.showDialog(d)
 }
 
 // ---- incident add/edit dialog ----
@@ -464,7 +510,13 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 	sizer := canvas.NewRectangle(color.Transparent)
 	sizer.SetMinSize(fyne.NewSize(440, 0))
 
-	content := container.NewVBox(sizer, form, errLabel, buttons)
+	// Bounded/scrollable for the same reason as openIncidentViewDialog — a
+	// long "Доп. информация" entry shouldn't be able to push
+	// Сохранить/Удалить/Отмена off-screen with no way to reach them.
+	formScroll := container.NewVScroll(container.NewVBox(sizer, form))
+	formScroll.SetMinSize(fyne.NewSize(0, 320))
+
+	content := container.NewBorder(nil, container.NewVBox(errLabel, buttons), nil, nil, formScroll)
 	d = dialog.NewCustomWithoutButtons(title, content, a.win)
 	if isNew {
 		// Keep the clicked point visibly marked on the map while this
@@ -472,7 +524,7 @@ func (a *App) openIncidentDialog(in *store.Incident) {
 		a.mapWidget.SetPendingPoint(in.Lat, in.Lon)
 		d.SetOnClosed(a.mapWidget.ClearPendingPoint)
 	}
-	d.Show()
+	a.showDialog(d)
 }
 
 // showDatePicker opens a small calendar popup for picking a single date, as
@@ -499,7 +551,7 @@ func (a *App) showDatePicker(current string, onPick func(iso string)) {
 	sizer.SetMinSize(fyne.NewSize(280, 0))
 	content := container.NewVBox(sizer, cal)
 	d = dialog.NewCustomWithoutButtons("Выбор даты", content, a.win)
-	d.Show()
+	a.showDialog(d)
 }
 
 // ---- report dialog ----
@@ -576,5 +628,5 @@ func (a *App) showReportDialog(start, end string) {
 
 	content := container.NewVBox(sizer, header, breakdownLabel, widget.NewSeparator(), listArea, closeBtn)
 	d = dialog.NewCustomWithoutButtons("Отчёт", content, a.win)
-	d.Show()
+	a.showDialog(d)
 }

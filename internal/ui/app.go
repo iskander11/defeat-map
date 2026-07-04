@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -48,6 +49,12 @@ type App struct {
 	rangeStart, rangeEnd string
 
 	tabs *container.AppTabs
+
+	// openDialogs is every currently-shown custom dialog (see showDialog in
+	// dialogs.go), most-recently-opened last — Escape (wired below) closes
+	// only the top one, so a dialog opened from within another (e.g. the
+	// incident view opened from the report) stacks and unwinds correctly.
+	openDialogs []dialog.Dialog
 }
 
 func NewApp(win fyne.Window, st *store.Store, bundleRootCrimea string) *App {
@@ -72,6 +79,16 @@ func NewApp(win fyne.Window, st *store.Store, bundleRootCrimea string) *App {
 
 	a.calendarWidget = NewCalendarWidget()
 	a.calendarWidget.OnRangeSelected = a.onRangeSelected
+
+	// Escape closes whichever of our custom dialogs is currently on top —
+	// Fyne's dialog package has no built-in Escape-to-dismiss (only a
+	// visible button), which left one with an overlong description and no
+	// scrolling completely stuck (see showDialog/openIncidentViewDialog).
+	win.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
+		if ev.Name == fyne.KeyEscape {
+			a.closeTopDialog()
+		}
+	})
 
 	a.applyRegionToMap(a.currentRegion)
 	return a

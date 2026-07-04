@@ -14,6 +14,8 @@ import (
 	"path"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/html/charset"
 )
 
 // Point is one Placemark with Point geometry, parsed from or destined for
@@ -50,7 +52,13 @@ type kmlPoint struct {
 // Polygon, are skipped), walking nested <Folder> elements recursively.
 func ParseKML(data []byte) ([]Point, error) {
 	var root kmlRoot
-	if err := xml.Unmarshal(data, &root); err != nil {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	// Many real-world KML exporters (older Google Earth, SAS.Planet, etc.)
+	// declare a non-UTF-8 encoding (windows-1251, iso-8859-1, koi8-r...).
+	// encoding/xml only understands UTF-8/ASCII out of the box and errors
+	// on anything else unless a CharsetReader is supplied.
+	dec.CharsetReader = charset.NewReaderLabel
+	if err := dec.Decode(&root); err != nil {
 		return nil, fmt.Errorf("разбор KML: %w", err)
 	}
 	var points []Point

@@ -550,6 +550,10 @@ type calloutRowRefs struct {
 func newCalloutContent() (fyne.CanvasObject, *calloutRowRefs) {
 	date := widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	city := widget.NewLabel("")
+	// A safety net for names wider than calloutCardMaxW (see
+	// calloutCardWidth) — cut with "…" rather than silently overflowing
+	// past the card's edge with no indication there's more text.
+	city.Truncation = fyne.TextTruncateEllipsis
 	obj := widget.NewLabel("")
 	obj.Truncation = fyne.TextTruncateEllipsis
 	desc := widget.NewLabel("")
@@ -576,12 +580,41 @@ func bindCalloutContent(r *calloutRowRefs, in store.Incident) {
 	}
 }
 
-// calloutCardW is the card's fixed width; combined with every field being
-// truncated to one line (see newCalloutContent), this gives the card a
-// fixed, predictable size (3 lines: header, object, description) no matter
-// how long any field's text is — nothing stretches the card wider or
-// taller, and nothing spills into whatever is drawn behind it.
-const calloutCardW float32 = 240
+// calloutCardMinW/calloutCardMaxW bound the card's width: it's sized to fit
+// the header row (date + city) up to calloutCardMaxW, rather than a single
+// fixed width — a short city name gives a compact card, a long one gets more
+// room instead of immediately truncating, and only names that still don't
+// fit at the max width fall back to "…" (see the city label's Truncation in
+// newCalloutContent). Object/description stay truncated to one line each
+// regardless of the chosen width, so the card is always exactly 3 lines.
+const (
+	calloutCardMinW float32 = 240
+	calloutCardMaxW float32 = 400
+)
+
+// calloutHeaderPad accounts for the header row's inter-label spacing
+// (CustomPaddedHBoxLayout(4) in newCalloutContent) and the card's own
+// padding around its content (CustomPaddedLayout(4, 4, 6, 6) in
+// newCalloutCard — 6px each side), so the measured width leaves the date
+// and city text exactly as much room as they'll actually have.
+const calloutHeaderPad float32 = 4 + 6 + 6
+
+// calloutCardWidth returns how wide a card needs to be to fit date and city
+// on one line without truncating, clamped to [calloutCardMinW,
+// calloutCardMaxW].
+func calloutCardWidth(date, city string) float32 {
+	dateProbe := widget.NewLabelWithStyle(date, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	cityProbe := widget.NewLabel(city)
+	w := dateProbe.MinSize().Width + cityProbe.MinSize().Width + calloutHeaderPad
+	switch {
+	case w < calloutCardMinW:
+		return calloutCardMinW
+	case w > calloutCardMaxW:
+		return calloutCardMaxW
+	default:
+		return w
+	}
+}
 
 // calloutMinZoom is the lowest zoom level at which callout cards are still
 // drawn (see mapRenderer.rebuild); below it they're hidden to avoid
@@ -589,17 +622,17 @@ const calloutCardW float32 = 240
 // of zoom while the real-world distance between markers shrinks.
 const calloutMinZoom = 11
 
-// sizeCalloutCard returns card's natural height at the fixed calloutCardW,
+// sizeCalloutCard returns the card's natural height at the given width,
 // resizing it (and, through normal container layout, its children) to
 // match. Two passes because Fyne's box layouts compute each child's height
 // from that child's *current* MinSize() before applying a new width, so a
-// label's reported size only reflects calloutCardW after it has already
-// been resized to that width once — hence resize-measure-resize rather
+// label's reported size only reflects the target width after it has
+// already been resized to it once — hence resize-measure-resize rather
 // than a single MinSize() call.
-func sizeCalloutCard(card fyne.CanvasObject) fyne.Size {
-	card.Resize(fyne.NewSize(calloutCardW, card.MinSize().Height))
+func sizeCalloutCard(card fyne.CanvasObject, width float32) fyne.Size {
+	card.Resize(fyne.NewSize(width, card.MinSize().Height))
 	h := card.MinSize().Height
-	size := fyne.NewSize(calloutCardW, h)
+	size := fyne.NewSize(width, h)
 	card.Resize(size)
 	return size
 }
@@ -802,7 +835,8 @@ func (r *mapRenderer) rebuild() {
 			markerY := (float32(ty)-float32(cy))*tilePx + size.Height/2
 			centerX, centerY := markerX+off.dx, markerY+off.dy
 
-			cardSize := sizeCalloutCard(cw.card)
+			cardWidth := calloutCardWidth(formatDisplayDate(in.Date), in.City)
+			cardSize := sizeCalloutCard(cw.card, cardWidth)
 			cardPos := fyne.NewPos(centerX-cardSize.Width/2, centerY-cardSize.Height/2)
 			cw.card.Move(cardPos)
 			newRects[in.ID] = calloutRect{pos: cardPos, size: cardSize}
